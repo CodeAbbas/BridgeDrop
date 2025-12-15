@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 
+// CRITICAL: This ensures the route runs at request time to read Env Vars securely
+export const dynamic = 'force-dynamic'; 
+
 export async function GET() {
   // 1. Read keys from the Server Environment
   const firebaseConfig = {
@@ -201,4 +204,3 @@ export async function GET() {
     headers: { 'content-type': 'text/html' },
   });
 }
-
