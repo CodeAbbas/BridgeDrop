@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  collection, doc, setDoc, onSnapshot, addDoc, updateDoc, getDoc 
+  collection, doc, setDoc, onSnapshot, addDoc, updateDoc, getDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { 
   signInAnonymously, onAuthStateChanged 
@@ -19,6 +19,9 @@ const rtcConfig = {
   ],
 };
 
+// 24 Hours in milliseconds
+const ROOM_TTL = 24 * 60 * 60 * 1000; 
+
 export default function BridgeDrop() {
   const [user, setUser] = useState<any>(null);
   const [mode, setMode] = useState<'home' | 'sender' | 'receiver' | 'receiver_input'>('home');
@@ -27,6 +30,7 @@ export default function BridgeDrop() {
   const [progress, setProgress] = useState(0);
   const [fileMeta, setFileMeta] = useState<any>(null);
   const [receivedBlobUrl, setReceivedBlobUrl] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null); // New state for specific errors
 
   // Refs
   const peerConnection = useRef<RTCPeerConnection | null>(null);
@@ -47,13 +51,9 @@ export default function BridgeDrop() {
     return onAuthStateChanged(auth, (u) => setUser(u));
   }, []);
 
-  // Updated Function: Now accepts activeRoomId as an argument
   const setupPeerConnection = async (isInitiator: boolean, activeRoomId: string) => {
-    if (!activeRoomId) {
-      console.error("Cannot start connection without a Room ID");
-      return;
-    }
-
+    if (!activeRoomId) return;
+    setErrorMsg(null); // Reset errors
     setStatus('connecting');
     
     if (typeof window === 'undefined') return;
@@ -73,6 +73,8 @@ export default function BridgeDrop() {
       if (state === 'disconnected' || state === 'failed') setStatus('error');
     };
 
+    const roomRef = doc(db, 'rooms', activeRoomId);
+
     if (isInitiator) {
       // Sender Logic
       dataChannel.current = peerConnection.current.createDataChannel("fileTransfer");
@@ -81,9 +83,11 @@ export default function BridgeDrop() {
       const offer = await peerConnection.current.createOffer();
       await peerConnection.current.setLocalDescription(offer);
       
-      // Use activeRoomId here
-      const roomRef = doc(db, 'rooms', activeRoomId);
-      await setDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp } });
+      // SECURITY: Add createdAt timestamp
+      await setDoc(roomRef, { 
+        offer: { type: offer.type, sdp: offer.sdp },
+        createdAt: Date.now() // Use serverTimestamp() in a real app, Date.now() is fine for MVP check
+      });
 
       onSnapshot(roomRef, (snap) => {
         const data = snap.data();
@@ -100,19 +104,27 @@ export default function BridgeDrop() {
         setupDataListeners();
       };
 
-      // Use activeRoomId here
-      const roomRef = doc(db, 'rooms', activeRoomId);
       const roomSnap = await getDoc(roomRef);
       
       if (roomSnap.exists()) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(roomSnap.data().offer));
+        const data = roomSnap.data();
+
+        // SECURITY: Check Expiration
+        if (data.createdAt && (Date.now() - data.createdAt > ROOM_TTL)) {
+           setStatus('error');
+           setErrorMsg("Room Expired (Older than 24h)");
+           peerConnection.current.close();
+           return;
+        }
+
+        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
         const answer = await peerConnection.current.createAnswer();
         await peerConnection.current.setLocalDescription(answer);
         await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
         listenCandidates(activeRoomId, 'callerCandidates', peerConnection.current);
       } else {
         setStatus('error');
-        console.error("Room does not exist");
+        setErrorMsg("Room not found");
       }
     }
   };
@@ -179,6 +191,7 @@ export default function BridgeDrop() {
     setProgress(0);
     setFileMeta(null);
     setReceivedBlobUrl(null);
+    setErrorMsg(null);
     peerConnection.current?.close();
   };
 
@@ -227,9 +240,9 @@ export default function BridgeDrop() {
                   <button 
                     onClick={() => {
                       const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-                      setRoomId(newCode); // Update state (async)
+                      setRoomId(newCode); 
                       setMode('sender');
-                      setupPeerConnection(true, newCode); // Pass explicit value immediately
+                      setupPeerConnection(true, newCode); 
                     }}
                     className="w-full bg-white/60 hover:bg-white/80 border border-white/60 rounded-[1.5rem] p-5 flex items-center justify-between group transition-all duration-300 shadow-sm hover:shadow-lg hover:scale-[1.02] active:scale-95"
                   >
@@ -281,7 +294,7 @@ export default function BridgeDrop() {
                          if(v.length===6) { 
                            setRoomId(v); 
                            setMode('receiver'); 
-                           setupPeerConnection(false, v); // Pass explicit value
+                           setupPeerConnection(false, v); 
                          }
                       }}
                     />
@@ -293,6 +306,7 @@ export default function BridgeDrop() {
               {(mode === 'sender' || mode === 'receiver') && (
                 <div className="space-y-6">
                   
+                  {/* Status / Error Display */}
                   <div className="flex justify-center">
                     <div className={`px-5 py-2 rounded-full backdrop-blur-md border border-white/20 flex items-center space-x-2 shadow-sm transition-colors duration-500 ${
                       status === 'connected' ? 'bg-emerald-500/10 text-emerald-700' : 
@@ -300,7 +314,9 @@ export default function BridgeDrop() {
                       'bg-slate-500/10 text-slate-600'
                     }`}>
                       {status === 'connecting' || status === 'transferring' ? <Loader2 className="w-3 h-3 animate-spin"/> : <Wifi className="w-3 h-3"/>}
-                      <span className="text-xs font-bold uppercase tracking-widest">{status}</span>
+                      <span className="text-xs font-bold uppercase tracking-widest">
+                        {status === 'error' && errorMsg ? errorMsg : status}
+                      </span>
                     </div>
                   </div>
 

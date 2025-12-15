@@ -1,20 +1,21 @@
 import { NextResponse } from 'next/server';
 
-// CRITICAL: This ensures the route runs at request time to read Env Vars securely
 export const dynamic = 'force-dynamic'; 
 
 export async function GET() {
-  // 1. Read keys from the Server Environment
-  const firebaseConfig = {
-    apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-    authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-    storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
-  };
+  const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+  const authDomain = process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
+  const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+  const storageBucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET;
+  const messagingSenderId = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
+  const appId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID;
 
-  // 2. Construct the HTML string (The "Lite" App)
+  if (!apiKey || !projectId) {
+    return new NextResponse("<h1>Config Error</h1><p>Missing API Keys</p>", { status: 500, headers: {'content-type':'text/html'} });
+  }
+
+  const firebaseConfig = { apiKey, authDomain, projectId, storageBucket, messagingSenderId, appId };
+
   const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -34,29 +35,23 @@ export async function GET() {
         .hidden { display: none; }
         .log-box { font-size: 10px; color: #999; text-align: left; margin-top: 20px; border-top: 1px solid #eee; padding-top: 5px; }
     </style>
-    
-    <!-- Load Firebase Compat (Safe for iOS 12) -->
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
-
 <div class="card">
-    <h1>🍏 BridgeDrop Lite (Secure)</h1>
+    <h1>🍏 BridgeDrop Lite</h1>
     <div id="status">Connecting...</div>
-
     <div id="view-home" class="hidden">
         <button class="btn-blue" onclick="startReceive()">⬇️ Receive Files</button>
         <button class="btn-green" onclick="startSend()">⬆️ Send Files</button>
     </div>
-
     <div id="view-receive" class="hidden">
         <p>Enter Code:</p>
         <input type="text" id="code-input" maxlength="6" placeholder="CODE">
         <button class="btn-blue" onclick="joinRoom()">Connect</button>
     </div>
-
     <div id="view-transfer" class="hidden">
         <h2 id="room-display"></h2>
         <div id="dl-area" class="hidden">
@@ -68,29 +63,22 @@ export async function GET() {
             <button class="btn-blue" onclick="sendFile()">Send File</button>
         </div>
     </div>
-    
     <div id="debug" class="log-box"></div>
 </div>
-
 <script>
-    // INJECTED CONFIG FROM SERVER
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
-
     function log(m) { console.log(m); document.getElementById('debug').innerHTML += "<div>"+m+"</div>"; }
-
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
     const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }] };
+    const ROOM_TTL = 24 * 60 * 60 * 1000;
 
     try {
         firebase.initializeApp(firebaseConfig);
         db = firebase.firestore();
         auth = firebase.auth();
-        
-        // Force Memory Persistence for iOS 12
         auth.setPersistence(firebase.auth.Auth.Persistence.NONE)
             .then(() => auth.signInAnonymously())
             .catch(e => log("Auth Error: "+e.message));
-
         auth.onAuthStateChanged(u => {
             if(u) {
                 document.getElementById('status').innerText = "Ready";
@@ -104,7 +92,6 @@ export async function GET() {
         ['view-home','view-receive','view-transfer'].forEach(v => document.getElementById(v).style.display='none');
         document.getElementById(id).style.display = 'block';
     }
-
     function startReceive() { show('view-receive'); }
     function startSend() {
         roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -124,7 +111,6 @@ export async function GET() {
     function setupPeer(isInit) {
         log("Peer Init...");
         peerConnection = new RTCPeerConnection(rtcConfig);
-        
         peerConnection.onicecandidate = e => {
             if(e.candidate) db.collection('rooms').doc(roomId).collection(isInit?'callerCandidates':'calleeCandidates').add(e.candidate.toJSON());
         };
@@ -134,7 +120,11 @@ export async function GET() {
             dataChannel = peerConnection.createDataChannel("file");
             setupData();
             peerConnection.createOffer().then(o => peerConnection.setLocalDescription(o)).then(() => {
-                db.collection('rooms').doc(roomId).set({offer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp}});
+                // SECURITY: Add createdAt
+                db.collection('rooms').doc(roomId).set({
+                    offer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp},
+                    createdAt: Date.now()
+                });
             });
             db.collection('rooms').doc(roomId).onSnapshot(s => {
                 const d = s.data();
@@ -145,11 +135,21 @@ export async function GET() {
             peerConnection.ondatachannel = e => { dataChannel = e.channel; setupData(); };
             db.collection('rooms').doc(roomId).get().then(s => {
                 if(s.exists) {
-                    peerConnection.setRemoteDescription(new RTCSessionDescription(s.data().offer))
+                    const d = s.data();
+                    // SECURITY: Check Expiration
+                    if (d.createdAt && (Date.now() - d.createdAt > ROOM_TTL)) {
+                        log("Room Expired!");
+                        document.getElementById('status').innerText = "Expired";
+                        return;
+                    }
+
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(d.offer))
                         .then(() => peerConnection.createAnswer())
                         .then(a => peerConnection.setLocalDescription(a))
                         .then(() => db.collection('rooms').doc(roomId).update({answer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp}}));
                     listenCandidates('callerCandidates');
+                } else {
+                    log("Room Not Found");
                 }
             });
         }
