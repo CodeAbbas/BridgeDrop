@@ -33,6 +33,8 @@ export async function GET() {
         input { width: 90%; padding: 10px; font-size: 24px; text-align: center; border: 2px solid #ccc; border-radius: 8px; margin-bottom: 10px; text-transform: uppercase; }
         #status { font-weight: bold; margin: 10px 0; color: #666; }
         .hidden { display: none; }
+        .file-item { background: #e8f5e9; padding: 10px; margin-bottom: 5px; border-radius: 8px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
+        .file-item a { text-decoration: none; color: white; background: #28a745; padding: 5px 10px; border-radius: 5px; font-size: 12px; font-weight: bold; }
         .log-box { font-size: 10px; color: #999; text-align: left; margin-top: 20px; border-top: 1px solid #eee; padding-top: 5px; }
     </style>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
@@ -54,13 +56,13 @@ export async function GET() {
     </div>
     <div id="view-transfer" class="hidden">
         <h2 id="room-display"></h2>
-        <div id="dl-area" class="hidden">
-            <h3>✅ File Ready!</h3>
-            <a id="dl-link" href="#" class="btn-green" style="display:block; text-decoration:none;">Download</a>
-        </div>
+        
+        <!-- Files List -->
+        <div id="file-list" style="margin-top:20px;"></div>
+        
         <div id="sender-area" class="hidden">
-            <input type="file" id="file-input">
-            <button class="btn-blue" onclick="sendFile()">Send File</button>
+            <input type="file" id="file-input" multiple>
+            <button class="btn-blue" onclick="sendFiles()">Send Selected Files</button>
         </div>
     </div>
     <div id="debug" class="log-box"></div>
@@ -120,7 +122,6 @@ export async function GET() {
             dataChannel = peerConnection.createDataChannel("file");
             setupData();
             peerConnection.createOffer().then(o => peerConnection.setLocalDescription(o)).then(() => {
-                // SECURITY: Add createdAt
                 db.collection('rooms').doc(roomId).set({
                     offer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp},
                     createdAt: Date.now()
@@ -136,13 +137,11 @@ export async function GET() {
             db.collection('rooms').doc(roomId).get().then(s => {
                 if(s.exists) {
                     const d = s.data();
-                    // SECURITY: Check Expiration
                     if (d.createdAt && (Date.now() - d.createdAt > ROOM_TTL)) {
                         log("Room Expired!");
                         document.getElementById('status').innerText = "Expired";
                         return;
                     }
-
                     peerConnection.setRemoteDescription(new RTCSessionDescription(d.offer))
                         .then(() => peerConnection.createAnswer())
                         .then(a => peerConnection.setLocalDescription(a))
@@ -171,29 +170,50 @@ export async function GET() {
                 else if(m.type==='end') {
                     const blob = new Blob(fileChunks, {type:fileMeta.mime});
                     const url = URL.createObjectURL(blob);
-                    const lnk = document.getElementById('dl-link');
-                    lnk.href = url; lnk.download = fileMeta.name;
-                    document.getElementById('dl-area').style.display='block';
-                    log("Done");
+                    
+                    // Create Download Element dynamically
+                    const div = document.createElement('div');
+                    div.className = 'file-item';
+                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis;">' + fileMeta.name + '</span> <a href="' + url + '" download="' + fileMeta.name + '">Save</a>';
+                    document.getElementById('file-list').appendChild(div);
+                    
+                    log("Done: " + fileMeta.name);
                 }
             } else fileChunks.push(d);
         };
     }
 
-    function sendFile() {
-        const f = document.getElementById('file-input').files[0];
-        if(!f || !dataChannel) return;
-        dataChannel.send(JSON.stringify({type:'meta', name:f.name, mime:f.type}));
-        const reader = new FileReader();
-        let offset = 0;
-        reader.onload = e => {
-            dataChannel.send(e.target.result);
-            offset += e.target.result.byteLength;
-            if(offset < f.size) readSlice(offset);
-            else { dataChannel.send(JSON.stringify({type:'end'})); log("Sent"); }
-        };
-        const readSlice = o => reader.readAsArrayBuffer(f.slice(o, o+16384));
-        readSlice(0);
+    async function sendFiles() {
+        const files = document.getElementById('file-input').files;
+        if(!files.length || !dataChannel) return;
+
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            log("Sending: " + f.name);
+            dataChannel.send(JSON.stringify({type:'meta', name:f.name, mime:f.type}));
+            
+            const reader = new FileReader();
+            const CHUNK = 16384;
+            let offset = 0;
+            
+            // Promisify the file reading for sequential sending
+            await new Promise((resolve) => {
+                reader.onload = e => {
+                    dataChannel.send(e.target.result);
+                    offset += e.target.result.byteLength;
+                    if(offset < f.size) {
+                        readSlice(offset);
+                    } else {
+                        dataChannel.send(JSON.stringify({type:'end'}));
+                        log("Sent: " + f.name);
+                        // Resolve after a small delay to ensure receiver processes
+                        setTimeout(resolve, 500); 
+                    }
+                };
+                const readSlice = o => reader.readAsArrayBuffer(f.slice(o, o+CHUNK));
+                readSlice(0);
+            });
+        }
     }
 </script>
 </body>

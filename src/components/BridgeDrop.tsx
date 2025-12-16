@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  collection, doc, setDoc, onSnapshot, addDoc, updateDoc, getDoc, serverTimestamp 
+  collection, doc, setDoc, onSnapshot, addDoc, updateDoc, getDoc 
 } from 'firebase/firestore';
 import { 
   signInAnonymously, onAuthStateChanged 
@@ -10,7 +10,7 @@ import {
 import { db, auth } from '@/lib/firebase';
 import { 
   Wifi, Smartphone, Tablet, Send, Check, Loader2, Share2, 
-  ArrowRight, X, Copy 
+  ArrowRight, X, Copy, Files
 } from 'lucide-react';
 
 const rtcConfig = {
@@ -19,8 +19,7 @@ const rtcConfig = {
   ],
 };
 
-// 24 Hours in milliseconds
-const ROOM_TTL = 24 * 60 * 60 * 1000; 
+const ROOM_TTL = 24 * 60 * 60 * 1000;
 
 export default function BridgeDrop() {
   const [user, setUser] = useState<any>(null);
@@ -28,17 +27,23 @@ export default function BridgeDrop() {
   const [roomId, setRoomId] = useState('');
   const [status, setStatus] = useState('idle');
   const [progress, setProgress] = useState(0);
-  const [fileMeta, setFileMeta] = useState<any>(null);
-  const [receivedBlobUrl, setReceivedBlobUrl] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null); // New state for specific errors
+  
+  // Track multiple files
+  const [fileQueue, setFileQueue] = useState<any[]>([]); // For receiver
+  const [currentFileIndex, setCurrentFileIndex] = useState(0); // For sender & receiver UI
+  const [totalFiles, setTotalFiles] = useState(0); // For sender UI
+  
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Refs
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const dataChannel = useRef<RTCDataChannel | null>(null);
-  const fileChunks = useRef<any[]>([]);
-  const fileSizeReceived = useRef(0);
+  
+  // Receiver state tracking
+  const incomingFileMeta = useRef<any>(null);
+  const incomingFileChunks = useRef<any[]>([]);
+  const incomingFileSize = useRef(0);
 
-  // Authentication
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -53,7 +58,7 @@ export default function BridgeDrop() {
 
   const setupPeerConnection = async (isInitiator: boolean, activeRoomId: string) => {
     if (!activeRoomId) return;
-    setErrorMsg(null); // Reset errors
+    setErrorMsg(null);
     setStatus('connecting');
     
     if (typeof window === 'undefined') return;
@@ -76,17 +81,15 @@ export default function BridgeDrop() {
     const roomRef = doc(db, 'rooms', activeRoomId);
 
     if (isInitiator) {
-      // Sender Logic
       dataChannel.current = peerConnection.current.createDataChannel("fileTransfer");
       setupDataListeners();
       
       const offer = await peerConnection.current.createOffer();
       await peerConnection.current.setLocalDescription(offer);
       
-      // SECURITY: Add createdAt timestamp
       await setDoc(roomRef, { 
         offer: { type: offer.type, sdp: offer.sdp },
-        createdAt: Date.now() // Use serverTimestamp() in a real app, Date.now() is fine for MVP check
+        createdAt: Date.now()
       });
 
       onSnapshot(roomRef, (snap) => {
@@ -98,7 +101,6 @@ export default function BridgeDrop() {
       listenCandidates(activeRoomId, 'calleeCandidates', peerConnection.current);
 
     } else {
-      // Receiver Logic
       peerConnection.current.ondatachannel = (e) => {
         dataChannel.current = e.channel;
         setupDataListeners();
@@ -108,11 +110,9 @@ export default function BridgeDrop() {
       
       if (roomSnap.exists()) {
         const data = roomSnap.data();
-
-        // SECURITY: Check Expiration
         if (data.createdAt && (Date.now() - data.createdAt > ROOM_TTL)) {
            setStatus('error');
-           setErrorMsg("Room Expired (Older than 24h)");
+           setErrorMsg("Room Expired");
            peerConnection.current.close();
            return;
         }
@@ -140,47 +140,81 @@ export default function BridgeDrop() {
   const setupDataListeners = () => {
     if (!dataChannel.current) return;
     dataChannel.current.onopen = () => setStatus('connected');
+    
     dataChannel.current.onmessage = (e) => {
       const data = e.data;
       if (typeof data === 'string') {
         const msg = JSON.parse(data);
         if (msg.type === 'meta') {
-          setFileMeta(msg);
-          fileChunks.current = [];
-          fileSizeReceived.current = 0;
+          // Start of a new file
+          incomingFileMeta.current = msg;
+          incomingFileChunks.current = [];
+          incomingFileSize.current = 0;
           setStatus('transferring');
-        } else if (msg.type === 'end') finalizeDownload();
+          // Update UI to show we are receiving something
+          setCurrentFileIndex(prev => prev + 1); 
+        } else if (msg.type === 'end') {
+          // End of current file
+          const blob = new Blob(incomingFileChunks.current, { type: incomingFileMeta.current.mime });
+          const url = URL.createObjectURL(blob);
+          
+          setFileQueue(prev => [...prev, {
+            name: incomingFileMeta.current.name,
+            url: url
+          }]);
+          
+          // If this was the last file in a batch, status might change, but usually we stay 'connected' or 'transferring' if more are coming.
+          // We'll set to 'completed' briefly or keep it 'transferring' if we knew the total count. 
+          // For simplicity, we just keep receiving.
+          setStatus('file_received'); // Custom status to show animation
+          setTimeout(() => setStatus('connected'), 2000); // Reset to connected to await more
+        }
       } else {
-        fileChunks.current.push(data);
-        fileSizeReceived.current += data.byteLength;
-        if (fileMeta) setProgress(Math.min(100, Math.round((fileSizeReceived.current / fileMeta.size) * 100)));
+        // Chunk Data
+        incomingFileChunks.current.push(data);
+        incomingFileSize.current += data.byteLength;
+        if (incomingFileMeta.current) {
+           const pct = Math.min(100, Math.round((incomingFileSize.current / incomingFileMeta.current.size) * 100));
+           setProgress(pct);
+        }
       }
     };
   };
 
-  const sendFile = async (file: File) => {
+  const sendFiles = async (files: FileList) => {
     if (!dataChannel.current || dataChannel.current.readyState !== 'open') return;
-    setStatus('transferring');
-    dataChannel.current.send(JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type }));
     
-    const CHUNK = 16 * 1024;
-    const buf = await file.arrayBuffer();
-    let offset = 0;
-    while (offset < buf.byteLength) {
-      const chunk = buf.slice(offset, offset + CHUNK);
-      while (dataChannel.current.bufferedAmount > 65536) await new Promise(r => setTimeout(r, 5));
-      dataChannel.current.send(chunk);
-      offset += chunk.byteLength;
-      setProgress(Math.min(100, Math.round((offset / buf.byteLength) * 100)));
-    }
-    dataChannel.current.send(JSON.stringify({ type: 'end' }));
-    setStatus('completed');
-  };
+    setTotalFiles(files.length);
+    setCurrentFileIndex(0);
 
-  const finalizeDownload = () => {
-    if (!fileMeta) return;
-    const blob = new Blob(fileChunks.current, { type: fileMeta.mime });
-    setReceivedBlobUrl(URL.createObjectURL(blob));
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setCurrentFileIndex(i + 1); // 1-based index for UI
+      setStatus('transferring');
+      setProgress(0);
+
+      // 1. Send Meta
+      dataChannel.current.send(JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type }));
+      
+      // 2. Send Chunks
+      const CHUNK = 16 * 1024;
+      const buf = await file.arrayBuffer();
+      let offset = 0;
+      while (offset < buf.byteLength) {
+        const chunk = buf.slice(offset, offset + CHUNK);
+        while (dataChannel.current.bufferedAmount > 65536 * 2) await new Promise(r => setTimeout(r, 5));
+        dataChannel.current.send(chunk);
+        offset += chunk.byteLength;
+        setProgress(Math.min(100, Math.round((offset / buf.byteLength) * 100)));
+      }
+
+      // 3. Send End
+      dataChannel.current.send(JSON.stringify({ type: 'end' }));
+      
+      // Small delay between files to ensure receiver processes 'end' message
+      await new Promise(r => setTimeout(r, 500));
+    }
+    
     setStatus('completed');
   };
 
@@ -189,8 +223,9 @@ export default function BridgeDrop() {
     setRoomId('');
     setStatus('idle');
     setProgress(0);
-    setFileMeta(null);
-    setReceivedBlobUrl(null);
+    setFileQueue([]);
+    setTotalFiles(0);
+    setCurrentFileIndex(0);
     setErrorMsg(null);
     peerConnection.current?.close();
   };
@@ -206,7 +241,7 @@ export default function BridgeDrop() {
       </div>
 
       <div className="relative z-10 min-h-screen flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-white/40 backdrop-blur-2xl border border-white/50 shadow-2xl rounded-[2.5rem] p-8 overflow-hidden transition-all duration-500">
+        <div className="w-full max-w-md bg-white/40 backdrop-blur-2xl border border-white/50 shadow-2xl rounded-[2.5rem] p-8 overflow-hidden transition-all duration-500 max-h-[80vh] overflow-y-auto">
           
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center space-x-3">
@@ -338,16 +373,22 @@ export default function BridgeDrop() {
                            <div className="absolute inset-0 bg-blue-400/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
                            <div className="relative h-48 bg-white/40 border-2 border-dashed border-white/60 hover:border-blue-400/50 rounded-[2rem] flex flex-col items-center justify-center transition-all duration-300 hover:scale-[1.02] active:scale-95">
                               <div className="bg-white/60 p-4 rounded-full mb-3 shadow-sm backdrop-blur-sm">
-                                <Send className="w-6 h-6 text-blue-600" />
+                                <Files className="w-6 h-6 text-blue-600" />
                               </div>
                               <span className="font-semibold text-slate-700">Tap to Send</span>
-                              <span className="text-xs text-slate-400 mt-1">Photos or Videos</span>
+                              <span className="text-xs text-slate-400 mt-1">Select Multiple Files</span>
                            </div>
-                           <input type="file" className="hidden" onChange={(e) => e.target.files && e.target.files[0] && sendFile(e.target.files[0])} />
+                           <input type="file" multiple className="hidden" onChange={(e) => e.target.files && e.target.files.length > 0 && sendFiles(e.target.files)} />
                          </label>
                        ) : (
                          <div className="p-8 text-center text-slate-400 bg-slate-50/50 rounded-[2rem]">
                             <p className="animate-pulse">Waiting for receiver...</p>
+                         </div>
+                       )}
+                       
+                       {status === 'transferring' && (
+                         <div className="text-center mt-4 text-xs font-bold text-blue-600">
+                           Sending File {currentFileIndex} of {totalFiles}...
                          </div>
                        )}
                     </div>
@@ -355,43 +396,49 @@ export default function BridgeDrop() {
 
                   {mode === 'receiver' && (
                     <div className="pt-2">
-                      {status === 'completed' && receivedBlobUrl ? (
-                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-[2rem] p-6 text-center animate-in zoom-in duration-300">
-                          <div className="w-12 h-12 bg-emerald-500 rounded-full flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-500/30">
-                            <Check className="w-6 h-6 text-white" />
-                          </div>
-                          <h3 className="font-bold text-emerald-900 mb-1">Received</h3>
-                          <p className="text-xs text-emerald-700/70 mb-6 truncate px-4">{fileMeta?.name}</p>
-                          <a 
-                            href={receivedBlobUrl}
-                            download={fileMeta?.name} 
-                            className="block w-full bg-emerald-500 text-white font-bold py-4 rounded-2xl shadow-xl shadow-emerald-500/20 hover:bg-emerald-600 active:scale-95 transition-all"
-                          >
-                            Save to Files
-                          </a>
-                        </div>
-                      ) : (
-                        <div className="h-32 flex items-center justify-center">
-                          {status === 'transferring' ? (
-                            <div className="text-center">
-                               <div className="w-16 h-16 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin mx-auto mb-3"></div>
-                               <p className="text-blue-600 font-bold">Receiving...</p>
-                            </div>
-                          ) : (
-                            <p className="text-slate-400">Ready to accept...</p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                      <div className="space-y-4">
+                        {/* Current Transfer Progress */}
+                        {status === 'transferring' && (
+                           <div className="text-center">
+                              <p className="text-blue-600 font-bold mb-2">Receiving File {currentFileIndex}...</p>
+                              <div className="bg-white/40 p-1.5 rounded-full backdrop-blur-md shadow-inner">
+                                <div 
+                                  className="h-3 rounded-full bg-gradient-to-r from-blue-400 to-purple-400 transition-all duration-300"
+                                  style={{ width: `${progress}%` }}
+                                ></div>
+                              </div>
+                           </div>
+                        )}
 
-                  {(status === 'transferring' || status === 'completed') && (
-                    <div className="bg-white/40 p-1.5 rounded-full backdrop-blur-md shadow-inner">
-                      <div 
-                        className="h-3 rounded-full bg-gradient-to-r from-blue-400 to-purple-400 shadow-[0_0_10px_rgba(96,165,250,0.5)] transition-all duration-300 ease-out relative overflow-hidden"
-                        style={{ width: `${progress}%` }}
-                      >
-                        <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
+                        {/* Received Files List */}
+                        {fileQueue.length > 0 && (
+                          <div className="space-y-2 max-h-60 overflow-y-auto">
+                            <p className="text-xs font-bold text-emerald-700 uppercase tracking-wider text-center">Received Files</p>
+                            {fileQueue.map((file, idx) => (
+                              <div key={idx} className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 flex items-center justify-between animate-in slide-in-from-bottom-2">
+                                <div className="flex items-center gap-3 overflow-hidden">
+                                  <div className="bg-emerald-500 p-2 rounded-full text-white">
+                                    <Check size={14} />
+                                  </div>
+                                  <span className="text-xs text-emerald-900 font-medium truncate">{file.name}</span>
+                                </div>
+                                <a 
+                                  href={file.url}
+                                  download={file.name} 
+                                  className="bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg hover:bg-emerald-600 transition-colors"
+                                >
+                                  Save
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {fileQueue.length === 0 && status !== 'transferring' && (
+                           <div className="h-32 flex items-center justify-center text-slate-400">
+                             <p>Ready to receive...</p>
+                           </div>
+                        )}
                       </div>
                     </div>
                   )}
