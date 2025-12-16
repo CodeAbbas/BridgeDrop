@@ -34,8 +34,9 @@ export async function GET() {
         #status { font-weight: bold; margin: 10px 0; color: #666; }
         .hidden { display: none; }
         .file-item { background: #e8f5e9; padding: 10px; margin-bottom: 5px; border-radius: 8px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
-        .file-item a { text-decoration: none; color: white; background: #28a745; padding: 5px 10px; border-radius: 5px; font-size: 12px; font-weight: bold; }
+        .file-item button { width: auto; margin: 0; padding: 5px 10px; font-size: 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
         .log-box { font-size: 10px; color: #999; text-align: left; margin-top: 20px; border-top: 1px solid #eee; padding-top: 5px; }
+        #download-all-btn { background: #6f42c1; color: white; margin-top: 15px; display: none; }
     </style>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
@@ -60,6 +61,9 @@ export async function GET() {
         <!-- Files List -->
         <div id="file-list" style="margin-top:20px;"></div>
         
+        <!-- Download All Button -->
+        <button id="download-all-btn" onclick="downloadAllFiles()">Download All Files</button>
+        
         <div id="sender-area" class="hidden">
             <input type="file" id="file-input" multiple>
             <button class="btn-blue" onclick="sendFiles()">Send Selected Files</button>
@@ -71,8 +75,36 @@ export async function GET() {
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
     function log(m) { console.log(m); document.getElementById('debug').innerHTML += "<div>"+m+"</div>"; }
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
+    // Store received files for "Download All"
+    let receivedFiles = []; 
     const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }] };
     const ROOM_TTL = 24 * 60 * 60 * 1000;
+
+    // Use window.open for better iOS 12 compatibility
+    function triggerDownload(url, filename) {
+        var win = window.open(url, '_blank');
+        if (!win) {
+            window.location.href = url;
+        }
+    }
+
+    // Function to download all files sequentially
+    function downloadAllFiles() {
+        if (receivedFiles.length === 0) return;
+        
+        alert("Starting downloads... Please allow popups if prompted.");
+        
+        let i = 0;
+        function next() {
+            if (i >= receivedFiles.length) return;
+            const file = receivedFiles[i];
+            triggerDownload(file.url, file.name);
+            i++;
+            // Delay to prevent browser throttling
+            setTimeout(next, 1500); 
+        }
+        next();
+    }
 
     try {
         firebase.initializeApp(firebaseConfig);
@@ -171,14 +203,25 @@ export async function GET() {
                     const blob = new Blob(fileChunks, {type:fileMeta.mime});
                     const url = URL.createObjectURL(blob);
                     
-                    // --- UPDATED LOGIC HERE ---
+                    // Add to received list
+                    receivedFiles.push({ name: fileMeta.name, url: url });
+                    
+                    // Show "Download All" button if > 1 file
+                    if (receivedFiles.length > 1) {
+                        document.getElementById('download-all-btn').style.display = 'block';
+                    }
+
+                    const btnId = 'btn-' + Math.random().toString(36).substr(2, 9);
                     const div = document.createElement('div');
                     div.className = 'file-item';
-                    
-                    // Added target="_blank" to ensure file opens in new tab/download
-                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis; width: 60%;">' + fileMeta.name + '</span> <a href="' + url + '" download="' + fileMeta.name + '" target="_blank">Save</a>';
+                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis; width: 60%;">' + fileMeta.name + '</span> <button id="' + btnId + '">Open</button>';
                     
                     document.getElementById('file-list').appendChild(div);
+                    
+                    document.getElementById(btnId).onclick = function() {
+                        triggerDownload(url, fileMeta.name);
+                    };
+                    
                     log("Done: " + fileMeta.name);
                 }
             } else fileChunks.push(d);
