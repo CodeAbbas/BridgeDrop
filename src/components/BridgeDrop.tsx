@@ -60,7 +60,7 @@ export default function BridgeDrop() {
     
     if (typeof window === 'undefined') return;
 
-    // Capture the instance in a local variable for TypeScript safety
+    // Capture locally to avoid ref null issues
     const pc = new RTCPeerConnection(rtcConfig);
     peerConnection.current = pc;
 
@@ -92,10 +92,14 @@ export default function BridgeDrop() {
         createdAt: Date.now()
       });
 
-      onSnapshot(roomRef, (snap) => {
+      // Use a local flag to ensure we only set remote desc once
+      let isRemoteDescSet = false;
+
+      const unsubscribe = onSnapshot(roomRef, (snap) => {
         const data = snap.data();
-        if (!pc.currentRemoteDescription && data?.answer) {
+        if (!isRemoteDescSet && pc.signalingState === 'have-local-offer' && data?.answer) {
           pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          isRemoteDescSet = true;
         }
       });
       listenCandidates(activeRoomId, 'calleeCandidates', pc);
@@ -119,8 +123,8 @@ export default function BridgeDrop() {
              return;
           }
 
-          // Safe check: Use local 'pc' variable instead of ref
-          if (!pc.currentRemoteDescription && data.offer) {
+          // Safe check: Use local 'pc' variable and check signaling state
+          if (pc.signalingState === 'stable' && !pc.currentRemoteDescription && data.offer) {
             await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -325,6 +329,8 @@ export default function BridgeDrop() {
 
               {(mode === 'sender' || mode === 'receiver') && (
                 <div className="space-y-6">
+                  
+                  {/* Status / Error Display */}
                   <div className="flex justify-center">
                     <div className={`px-5 py-2 rounded-full backdrop-blur-md border border-white/20 flex items-center space-x-2 shadow-sm transition-colors duration-500 ${
                       status === 'connected' ? 'bg-emerald-500/10 text-emerald-700' : 
