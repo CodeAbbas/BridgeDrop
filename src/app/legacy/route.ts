@@ -134,7 +134,6 @@ export async function GET() {
             listenCandidates('calleeCandidates');
         } else {
             peerConnection.ondatachannel = e => { dataChannel = e.channel; setupData(); };
-            // FIX: Use onSnapshot instead of get() to handle slight delays in room creation
             db.collection('rooms').doc(roomId).onSnapshot(s => {
                 if(s.exists) {
                     const d = s.data();
@@ -143,7 +142,6 @@ export async function GET() {
                         document.getElementById('status').innerText = "Expired";
                         return;
                     }
-                    
                     if (!peerConnection.currentRemoteDescription && d.offer) {
                         peerConnection.setRemoteDescription(new RTCSessionDescription(d.offer))
                             .then(() => peerConnection.createAnswer())
@@ -173,12 +171,14 @@ export async function GET() {
                     const blob = new Blob(fileChunks, {type:fileMeta.mime});
                     const url = URL.createObjectURL(blob);
                     
-                    // Create Download Element dynamically
+                    // --- UPDATED LOGIC HERE ---
                     const div = document.createElement('div');
                     div.className = 'file-item';
-                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis;">' + fileMeta.name + '</span> <a href="' + url + '" download="' + fileMeta.name + '" target="_blank">Save</a>';
-                    document.getElementById('file-list').appendChild(div);
                     
+                    // Added target="_blank" to ensure file opens in new tab/download
+                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis; width: 60%;">' + fileMeta.name + '</span> <a href="' + url + '" download="' + fileMeta.name + '" target="_blank">Save</a>';
+                    
+                    document.getElementById('file-list').appendChild(div);
                     log("Done: " + fileMeta.name);
                 }
             } else fileChunks.push(d);
@@ -198,7 +198,6 @@ export async function GET() {
             const CHUNK = 16384;
             let offset = 0;
             
-            // Promisify the file reading for sequential sending
             await new Promise((resolve) => {
                 reader.onload = e => {
                     dataChannel.send(e.target.result);
@@ -208,7 +207,6 @@ export async function GET() {
                     } else {
                         dataChannel.send(JSON.stringify({type:'end'}));
                         log("Sent: " + f.name);
-                        // Resolve after a small delay to ensure receiver processes
                         setTimeout(resolve, 500); 
                     }
                 };
