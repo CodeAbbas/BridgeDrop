@@ -176,7 +176,7 @@ export async function GET() {
                     // Create Download Element dynamically
                     const div = document.createElement('div');
                     div.className = 'file-item';
-                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis;">' + fileMeta.name + '</span> <a href="' + url + '" download="' + fileMeta.name + '">Save</a>';
+                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis;">' + fileMeta.name + '</span> <a href="' + url + '" download="' + fileMeta.name + '" target="_blank">Save</a>';
                     document.getElementById('file-list').appendChild(div);
                     
                     log("Done: " + fileMeta.name);
