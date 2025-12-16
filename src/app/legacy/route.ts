@@ -22,7 +22,7 @@ export async function GET() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BridgeDrop Legacy</title>
+    <title>BridgeDrop</title>
     <style>
         /* --- TAILWIND RECREATION --- */
         :root {
@@ -58,7 +58,7 @@ export async function GET() {
             overflow-x: hidden;
         }
 
-        /* Background Blobs (Simplified for Legacy) */
+        /* Background Blobs */
         body::before {
             content: '';
             position: fixed;
@@ -78,7 +78,7 @@ export async function GET() {
 
         .card { 
             width: 100%;
-            max-width: 480px; 
+            max-width: 480px;
             background: rgba(255, 255, 255, 0.4); 
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
@@ -92,13 +92,6 @@ export async function GET() {
         }
 
         /* Header */
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; }
-        .logo-wrap { display: flex; align-items: center; gap: 12px; }
-        .logo-icon { background: rgba(255,255,255,0.5); padding: 10px; border-radius: 9999px; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); backdrop-filter: blur(4px); }
-        .app-name { font-weight: 600; font-size: 18px; color: var(--slate-800); letter-spacing: -0.025em; }
-        
-        /* Typography & Status */
-        h1 { margin: 0 0 8px 0; font-size: 24px; font-weight: 700; color: #0f172a; letter-spacing: -0.5px; }
         .subtitle { font-size: 14px; color: #64748b; margin-bottom: 24px; }
         
         #status { 
@@ -193,7 +186,8 @@ export async function GET() {
             position: relative;
         }
         .sender-box:active { background: rgba(255,255,255,0.6); border-color: var(--blue-500); }
-        
+        .upload-icon-bg { background: rgba(255,255,255,0.6); padding: 16px; border-radius: 9999px; margin-bottom: 12px; box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05); }
+
         /* File List */
         .file-list-container { max-height: 240px; overflow-y: auto; margin-top: 24px; -webkit-overflow-scrolling: touch; }
         .file-item {
@@ -264,8 +258,8 @@ export async function GET() {
         <div style="width: 56px; height: 56px; background: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
             <svg width="28" height="28" style="color:#2563eb"><use href="#icon-share"/></svg>
         </div>
-        <h1>BridgeDrop</h1>
-        <div class="subtitle">Secure P2P Transfer (Legacy Optimized)</div>
+        <h1 style="margin:0; font-size:24px; font-weight:700; color:var(--slate-800);">BridgeDrop</h1>
+        <div class="subtitle">Secure P2P Transfer (Legacy)</div>
     </div>
 
     <div id="status">Connecting...</div>
@@ -305,7 +299,7 @@ export async function GET() {
             <h2 style="font-size:18px; margin-bottom:8px; color:var(--slate-800);">Enter Connection Code</h2>
             <p style="font-size:14px; color:var(--slate-500);">Ask the sender for the 6-digit code</p>
         </div>
-        <input type="text" id="code-input" maxlength="6" placeholder="CODE">
+        <input type="text" id="code-input" class="code-input" maxlength="6" placeholder="CODE">
         <button class="btn-base btn-primary" onclick="joinRoom()">Connect</button>
         <button class="btn-base btn-ghost" onclick="location.reload()">Cancel</button>
     </div>
@@ -337,7 +331,7 @@ export async function GET() {
                     <svg width="32" height="32" style="color:#3b82f6"><use href="#icon-send"/></svg>
                 </div>
                 <span style="font-weight:700; color:var(--slate-800); margin-bottom:4px;">Tap to Send Files</span>
-                <span style="font-size:12px; color:var(--slate-500);">Photos or Videos</span>
+                <span style="font-size:12px; color:var(--slate-500);">Select Multiple</span>
             </label>
             <input type="file" id="file-input" multiple style="display:none;" onchange="sendFiles()">
         </div>
