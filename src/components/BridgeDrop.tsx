@@ -105,7 +105,6 @@ export default function BridgeDrop() {
         setupDataListeners();
       };
 
-      // FIX: Use onSnapshot instead of getDoc to wait for the room
       const unsubscribe = onSnapshot(roomRef, async (snap) => {
         if (snap.exists()) {
           const data = snap.data();
@@ -118,8 +117,8 @@ export default function BridgeDrop() {
              return;
           }
 
-          // Only set remote desc if we haven't already
-          if (!peerConnection.current?.currentRemoteDescription && data.offer) {
+          // FIX: Add explicit null check for peerConnection.current
+          if (peerConnection.current && !peerConnection.current.currentRemoteDescription && data.offer) {
             await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
             const answer = await peerConnection.current.createAnswer();
             await peerConnection.current.setLocalDescription(answer);
