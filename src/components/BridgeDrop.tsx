@@ -60,17 +60,19 @@ export default function BridgeDrop() {
     
     if (typeof window === 'undefined') return;
 
-    peerConnection.current = new RTCPeerConnection(rtcConfig);
+    // Capture the instance in a local variable for TypeScript safety
+    const pc = new RTCPeerConnection(rtcConfig);
+    peerConnection.current = pc;
 
-    peerConnection.current.onicecandidate = (event) => {
+    pc.onicecandidate = (event) => {
       if (event.candidate && activeRoomId) {
         const type = isInitiator ? 'callerCandidates' : 'calleeCandidates';
         addDoc(collection(db, 'rooms', activeRoomId, type), event.candidate.toJSON());
       }
     };
 
-    peerConnection.current.onconnectionstatechange = () => {
-      const state = peerConnection.current?.connectionState;
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
       if (state === 'connected') setStatus('connected');
       if (state === 'disconnected' || state === 'failed') setStatus('error');
     };
@@ -79,11 +81,11 @@ export default function BridgeDrop() {
 
     if (isInitiator) {
       // Sender Logic
-      dataChannel.current = peerConnection.current.createDataChannel("fileTransfer");
+      dataChannel.current = pc.createDataChannel("fileTransfer");
       setupDataListeners();
       
-      const offer = await peerConnection.current.createOffer();
-      await peerConnection.current.setLocalDescription(offer);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
       
       await setDoc(roomRef, { 
         offer: { type: offer.type, sdp: offer.sdp },
@@ -92,15 +94,15 @@ export default function BridgeDrop() {
 
       onSnapshot(roomRef, (snap) => {
         const data = snap.data();
-        if (!peerConnection.current?.currentRemoteDescription && data?.answer) {
-          peerConnection.current?.setRemoteDescription(new RTCSessionDescription(data.answer));
+        if (!pc.currentRemoteDescription && data?.answer) {
+          pc.setRemoteDescription(new RTCSessionDescription(data.answer));
         }
       });
-      listenCandidates(activeRoomId, 'calleeCandidates', peerConnection.current);
+      listenCandidates(activeRoomId, 'calleeCandidates', pc);
 
     } else {
       // Receiver Logic
-      peerConnection.current.ondatachannel = (e) => {
+      pc.ondatachannel = (e) => {
         dataChannel.current = e.channel;
         setupDataListeners();
       };
@@ -112,18 +114,18 @@ export default function BridgeDrop() {
           if (data.createdAt && (Date.now() - data.createdAt > ROOM_TTL)) {
              setStatus('error');
              setErrorMsg("Room Expired");
-             peerConnection.current?.close();
+             pc.close();
              unsubscribe();
              return;
           }
 
-          // FIX: Add explicit null check for peerConnection.current
-          if (peerConnection.current && !peerConnection.current.currentRemoteDescription && data.offer) {
-            await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
-            const answer = await peerConnection.current.createAnswer();
-            await peerConnection.current.setLocalDescription(answer);
+          // Safe check: Use local 'pc' variable instead of ref
+          if (!pc.currentRemoteDescription && data.offer) {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
             await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
-            listenCandidates(activeRoomId, 'callerCandidates', peerConnection.current);
+            listenCandidates(activeRoomId, 'callerCandidates', pc);
           }
         }
       });
