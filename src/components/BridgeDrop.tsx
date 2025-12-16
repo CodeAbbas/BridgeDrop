@@ -10,7 +10,7 @@ import {
 import { db, auth } from '@/lib/firebase';
 import { 
   Wifi, Smartphone, Tablet, Send, Check, Loader2, Share2, 
-  ArrowRight, X, Copy, Files
+  ArrowRight, X, Copy, Files, RefreshCw
 } from 'lucide-react';
 
 const rtcConfig = {
@@ -60,7 +60,6 @@ export default function BridgeDrop() {
     
     if (typeof window === 'undefined') return;
 
-    // Capture locally to avoid ref null issues
     const pc = new RTCPeerConnection(rtcConfig);
     peerConnection.current = pc;
 
@@ -80,7 +79,6 @@ export default function BridgeDrop() {
     const roomRef = doc(db, 'rooms', activeRoomId);
 
     if (isInitiator) {
-      // Sender Logic
       dataChannel.current = pc.createDataChannel("fileTransfer");
       setupDataListeners();
       
@@ -92,20 +90,17 @@ export default function BridgeDrop() {
         createdAt: Date.now()
       });
 
-      // Use a local flag to ensure we only set remote desc once
-      let isRemoteDescSet = false;
-
-      const unsubscribe = onSnapshot(roomRef, (snap) => {
+      let remoteDescSet = false;
+      const unsubscribe = onSnapshot(roomRef, async (snap) => {
         const data = snap.data();
-        if (!isRemoteDescSet && pc.signalingState === 'have-local-offer' && data?.answer) {
-          pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-          isRemoteDescSet = true;
+        if (!pc.currentRemoteDescription && data?.answer && !remoteDescSet) {
+          remoteDescSet = true;
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
         }
       });
       listenCandidates(activeRoomId, 'calleeCandidates', pc);
 
     } else {
-      // Receiver Logic
       pc.ondatachannel = (e) => {
         dataChannel.current = e.channel;
         setupDataListeners();
@@ -123,8 +118,7 @@ export default function BridgeDrop() {
              return;
           }
 
-          // Safe check: Use local 'pc' variable and check signaling state
-          if (pc.signalingState === 'stable' && !pc.currentRemoteDescription && data.offer) {
+          if (!pc.currentRemoteDescription && data.offer) {
             await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -205,6 +199,11 @@ export default function BridgeDrop() {
       await new Promise(r => setTimeout(r, 500));
     }
     setStatus('completed');
+  };
+
+  const clearQueue = () => {
+    setFileQueue([]);
+    setStatus('connected'); // Reset status but keep connection
   };
 
   const reset = () => {
@@ -329,8 +328,6 @@ export default function BridgeDrop() {
 
               {(mode === 'sender' || mode === 'receiver') && (
                 <div className="space-y-6">
-                  
-                  {/* Status / Error Display */}
                   <div className="flex justify-center">
                     <div className={`px-5 py-2 rounded-full backdrop-blur-md border border-white/20 flex items-center space-x-2 shadow-sm transition-colors duration-500 ${
                       status === 'connected' ? 'bg-emerald-500/10 text-emerald-700' : 
@@ -418,6 +415,15 @@ export default function BridgeDrop() {
                                 </a>
                               </div>
                             ))}
+                            
+                            {/* CLEAR BUTTON */}
+                            <button 
+                              onClick={clearQueue}
+                              className="w-full mt-4 flex items-center justify-center gap-2 bg-slate-100 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-200 transition-colors"
+                            >
+                              <RefreshCw size={16} />
+                              Clear & Ready for More
+                            </button>
                           </div>
                         )}
                         

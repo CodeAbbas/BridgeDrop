@@ -30,6 +30,7 @@ export async function GET() {
         button { width: 100%; padding: 15px; margin: 10px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
         .btn-blue { background: #007bff; color: white; }
         .btn-green { background: #28a745; color: white; }
+        .btn-gray { background: #6c757d; color: white; margin-top: 10px; }
         input { width: 90%; padding: 10px; font-size: 24px; text-align: center; border: 2px solid #ccc; border-radius: 8px; margin-bottom: 10px; text-transform: uppercase; }
         #status { font-weight: bold; margin: 10px 0; color: #666; }
         .hidden { display: none; }
@@ -61,8 +62,9 @@ export async function GET() {
         <!-- Files List -->
         <div id="file-list" style="margin-top:20px;"></div>
         
-        <!-- Download All Button -->
-        <button id="download-all-btn" onclick="downloadAllFiles()">Download All Files</button>
+        <!-- Action Buttons -->
+        <button id="download-all-btn" onclick="downloadAllFiles()">Download All</button>
+        <button id="clear-btn" class="btn-gray hidden" onclick="clearFiles()">Clear List</button>
         
         <div id="sender-area" class="hidden">
             <input type="file" id="file-input" multiple>
@@ -75,12 +77,10 @@ export async function GET() {
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
     function log(m) { console.log(m); document.getElementById('debug').innerHTML += "<div>"+m+"</div>"; }
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
-    // Store received files for "Download All"
     let receivedFiles = []; 
     const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }] };
     const ROOM_TTL = 24 * 60 * 60 * 1000;
 
-    // Use window.open for better iOS 12 compatibility
     function triggerDownload(url, filename) {
         var win = window.open(url, '_blank');
         if (!win) {
@@ -88,22 +88,27 @@ export async function GET() {
         }
     }
 
-    // Function to download all files sequentially
     function downloadAllFiles() {
         if (receivedFiles.length === 0) return;
-        
-        alert("Starting downloads... Please allow popups if prompted.");
-        
+        alert("Starting downloads...");
         let i = 0;
         function next() {
             if (i >= receivedFiles.length) return;
             const file = receivedFiles[i];
             triggerDownload(file.url, file.name);
             i++;
-            // Delay to prevent browser throttling
             setTimeout(next, 1500); 
         }
         next();
+    }
+
+    // NEW: Clear function to reset UI for next batch
+    function clearFiles() {
+        document.getElementById('file-list').innerHTML = '';
+        receivedFiles = [];
+        document.getElementById('download-all-btn').style.display = 'none';
+        document.getElementById('clear-btn').style.display = 'none';
+        log("List cleared. Ready for more.");
     }
 
     try {
@@ -203,13 +208,11 @@ export async function GET() {
                     const blob = new Blob(fileChunks, {type:fileMeta.mime});
                     const url = URL.createObjectURL(blob);
                     
-                    // Add to received list
                     receivedFiles.push({ name: fileMeta.name, url: url });
                     
-                    // Show "Download All" button if > 1 file
-                    if (receivedFiles.length > 1) {
-                        document.getElementById('download-all-btn').style.display = 'block';
-                    }
+                    if (receivedFiles.length > 1) document.getElementById('download-all-btn').style.display = 'block';
+                    // Show clear button once we have files
+                    document.getElementById('clear-btn').style.display = 'block';
 
                     const btnId = 'btn-' + Math.random().toString(36).substr(2, 9);
                     const div = document.createElement('div');
@@ -217,10 +220,7 @@ export async function GET() {
                     div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis; width: 60%;">' + fileMeta.name + '</span> <button id="' + btnId + '">Open</button>';
                     
                     document.getElementById('file-list').appendChild(div);
-                    
-                    document.getElementById(btnId).onclick = function() {
-                        triggerDownload(url, fileMeta.name);
-                    };
+                    document.getElementById(btnId).onclick = function() { triggerDownload(url, fileMeta.name); };
                     
                     log("Done: " + fileMeta.name);
                 }
