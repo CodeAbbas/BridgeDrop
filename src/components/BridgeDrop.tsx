@@ -28,18 +28,15 @@ export default function BridgeDrop() {
   const [status, setStatus] = useState('idle');
   const [progress, setProgress] = useState(0);
   
-  // Track multiple files
-  const [fileQueue, setFileQueue] = useState<any[]>([]); // For receiver
-  const [currentFileIndex, setCurrentFileIndex] = useState(0); // For sender & receiver UI
-  const [totalFiles, setTotalFiles] = useState(0); // For sender UI
+  const [fileQueue, setFileQueue] = useState<any[]>([]);
+  const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [totalFiles, setTotalFiles] = useState(0);
   
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Refs
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const dataChannel = useRef<RTCDataChannel | null>(null);
   
-  // Receiver state tracking
   const incomingFileMeta = useRef<any>(null);
   const incomingFileChunks = useRef<any[]>([]);
   const incomingFileSize = useRef(0);
@@ -81,6 +78,7 @@ export default function BridgeDrop() {
     const roomRef = doc(db, 'rooms', activeRoomId);
 
     if (isInitiator) {
+      // Sender Logic
       dataChannel.current = peerConnection.current.createDataChannel("fileTransfer");
       setupDataListeners();
       
@@ -101,31 +99,35 @@ export default function BridgeDrop() {
       listenCandidates(activeRoomId, 'calleeCandidates', peerConnection.current);
 
     } else {
+      // Receiver Logic
       peerConnection.current.ondatachannel = (e) => {
         dataChannel.current = e.channel;
         setupDataListeners();
       };
 
-      const roomSnap = await getDoc(roomRef);
-      
-      if (roomSnap.exists()) {
-        const data = roomSnap.data();
-        if (data.createdAt && (Date.now() - data.createdAt > ROOM_TTL)) {
-           setStatus('error');
-           setErrorMsg("Room Expired");
-           peerConnection.current.close();
-           return;
-        }
+      // FIX: Use onSnapshot instead of getDoc to wait for the room
+      const unsubscribe = onSnapshot(roomRef, async (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          
+          if (data.createdAt && (Date.now() - data.createdAt > ROOM_TTL)) {
+             setStatus('error');
+             setErrorMsg("Room Expired");
+             peerConnection.current?.close();
+             unsubscribe();
+             return;
+          }
 
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
-        const answer = await peerConnection.current.createAnswer();
-        await peerConnection.current.setLocalDescription(answer);
-        await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
-        listenCandidates(activeRoomId, 'callerCandidates', peerConnection.current);
-      } else {
-        setStatus('error');
-        setErrorMsg("Room not found");
-      }
+          // Only set remote desc if we haven't already
+          if (!peerConnection.current?.currentRemoteDescription && data.offer) {
+            await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await peerConnection.current.createAnswer();
+            await peerConnection.current.setLocalDescription(answer);
+            await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
+            listenCandidates(activeRoomId, 'callerCandidates', peerConnection.current);
+          }
+        }
+      });
     }
   };
 
@@ -144,33 +146,23 @@ export default function BridgeDrop() {
     dataChannel.current.onmessage = (e) => {
       const data = e.data;
       if (typeof data === 'string') {
-        const msg = JSON.parse(data);
-        if (msg.type === 'meta') {
-          // Start of a new file
-          incomingFileMeta.current = msg;
-          incomingFileChunks.current = [];
-          incomingFileSize.current = 0;
-          setStatus('transferring');
-          // Update UI to show we are receiving something
-          setCurrentFileIndex(prev => prev + 1); 
-        } else if (msg.type === 'end') {
-          // End of current file
-          const blob = new Blob(incomingFileChunks.current, { type: incomingFileMeta.current.mime });
-          const url = URL.createObjectURL(blob);
-          
-          setFileQueue(prev => [...prev, {
-            name: incomingFileMeta.current.name,
-            url: url
-          }]);
-          
-          // If this was the last file in a batch, status might change, but usually we stay 'connected' or 'transferring' if more are coming.
-          // We'll set to 'completed' briefly or keep it 'transferring' if we knew the total count. 
-          // For simplicity, we just keep receiving.
-          setStatus('file_received'); // Custom status to show animation
-          setTimeout(() => setStatus('connected'), 2000); // Reset to connected to await more
-        }
+        try {
+          const msg = JSON.parse(data);
+          if (msg.type === 'meta') {
+            incomingFileMeta.current = msg;
+            incomingFileChunks.current = [];
+            incomingFileSize.current = 0;
+            setStatus('transferring');
+            setCurrentFileIndex(prev => prev + 1); 
+          } else if (msg.type === 'end') {
+            const blob = new Blob(incomingFileChunks.current, { type: incomingFileMeta.current.mime });
+            const url = URL.createObjectURL(blob);
+            setFileQueue(prev => [...prev, { name: incomingFileMeta.current.name, url: url }]);
+            setStatus('file_received'); 
+            setTimeout(() => setStatus('connected'), 1000);
+          }
+        } catch(e) { console.log(e); }
       } else {
-        // Chunk Data
         incomingFileChunks.current.push(data);
         incomingFileSize.current += data.byteLength;
         if (incomingFileMeta.current) {
@@ -183,38 +175,30 @@ export default function BridgeDrop() {
 
   const sendFiles = async (files: FileList) => {
     if (!dataChannel.current || dataChannel.current.readyState !== 'open') return;
-    
     setTotalFiles(files.length);
     setCurrentFileIndex(0);
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      setCurrentFileIndex(i + 1); // 1-based index for UI
+      setCurrentFileIndex(i + 1);
       setStatus('transferring');
       setProgress(0);
 
-      // 1. Send Meta
       dataChannel.current.send(JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type }));
       
-      // 2. Send Chunks
       const CHUNK = 16 * 1024;
       const buf = await file.arrayBuffer();
       let offset = 0;
       while (offset < buf.byteLength) {
         const chunk = buf.slice(offset, offset + CHUNK);
-        while (dataChannel.current.bufferedAmount > 65536 * 2) await new Promise(r => setTimeout(r, 5));
+        while (dataChannel.current.bufferedAmount > 65536 * 2) await new Promise(r => setTimeout(r, 10));
         dataChannel.current.send(chunk);
         offset += chunk.byteLength;
         setProgress(Math.min(100, Math.round((offset / buf.byteLength) * 100)));
       }
-
-      // 3. Send End
       dataChannel.current.send(JSON.stringify({ type: 'end' }));
-      
-      // Small delay between files to ensure receiver processes 'end' message
       await new Promise(r => setTimeout(r, 500));
     }
-    
     setStatus('completed');
   };
 
@@ -340,8 +324,6 @@ export default function BridgeDrop() {
 
               {(mode === 'sender' || mode === 'receiver') && (
                 <div className="space-y-6">
-                  
-                  {/* Status / Error Display */}
                   <div className="flex justify-center">
                     <div className={`px-5 py-2 rounded-full backdrop-blur-md border border-white/20 flex items-center space-x-2 shadow-sm transition-colors duration-500 ${
                       status === 'connected' ? 'bg-emerald-500/10 text-emerald-700' : 
@@ -368,7 +350,7 @@ export default function BridgeDrop() {
 
                   {mode === 'sender' && (
                     <div className="pt-2">
-                       {status === 'connected' || status === 'completed' || status === 'transferring' ? (
+                       {status === 'connected' || status === 'completed' || status === 'transferring' || status === 'file_received' ? (
                          <label className={`block group relative cursor-pointer ${status === 'transferring' ? 'opacity-50 pointer-events-none' : ''}`}>
                            <div className="absolute inset-0 bg-blue-400/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
                            <div className="relative h-48 bg-white/40 border-2 border-dashed border-white/60 hover:border-blue-400/50 rounded-[2rem] flex flex-col items-center justify-center transition-all duration-300 hover:scale-[1.02] active:scale-95">
@@ -397,7 +379,6 @@ export default function BridgeDrop() {
                   {mode === 'receiver' && (
                     <div className="pt-2">
                       <div className="space-y-4">
-                        {/* Current Transfer Progress */}
                         {status === 'transferring' && (
                            <div className="text-center">
                               <p className="text-blue-600 font-bold mb-2">Receiving File {currentFileIndex}...</p>
@@ -410,7 +391,6 @@ export default function BridgeDrop() {
                            </div>
                         )}
 
-                        {/* Received Files List */}
                         {fileQueue.length > 0 && (
                           <div className="space-y-2 max-h-60 overflow-y-auto">
                             <p className="text-xs font-bold text-emerald-700 uppercase tracking-wider text-center">Received Files</p>
@@ -420,7 +400,7 @@ export default function BridgeDrop() {
                                   <div className="bg-emerald-500 p-2 rounded-full text-white">
                                     <Check size={14} />
                                   </div>
-                                  <span className="text-xs text-emerald-900 font-medium truncate">{file.name}</span>
+                                  <span className="text-xs text-emerald-900 font-medium truncate max-w-[150px]">{file.name}</span>
                                 </div>
                                 <a 
                                   href={file.url}

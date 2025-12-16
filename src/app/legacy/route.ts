@@ -134,7 +134,8 @@ export async function GET() {
             listenCandidates('calleeCandidates');
         } else {
             peerConnection.ondatachannel = e => { dataChannel = e.channel; setupData(); };
-            db.collection('rooms').doc(roomId).get().then(s => {
+            // FIX: Use onSnapshot instead of get() to handle slight delays in room creation
+            db.collection('rooms').doc(roomId).onSnapshot(s => {
                 if(s.exists) {
                     const d = s.data();
                     if (d.createdAt && (Date.now() - d.createdAt > ROOM_TTL)) {
@@ -142,13 +143,14 @@ export async function GET() {
                         document.getElementById('status').innerText = "Expired";
                         return;
                     }
-                    peerConnection.setRemoteDescription(new RTCSessionDescription(d.offer))
-                        .then(() => peerConnection.createAnswer())
-                        .then(a => peerConnection.setLocalDescription(a))
-                        .then(() => db.collection('rooms').doc(roomId).update({answer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp}}));
-                    listenCandidates('callerCandidates');
-                } else {
-                    log("Room Not Found");
+                    
+                    if (!peerConnection.currentRemoteDescription && d.offer) {
+                        peerConnection.setRemoteDescription(new RTCSessionDescription(d.offer))
+                            .then(() => peerConnection.createAnswer())
+                            .then(a => peerConnection.setLocalDescription(a))
+                            .then(() => db.collection('rooms').doc(roomId).update({answer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp}}));
+                        listenCandidates('callerCandidates');
+                    }
                 }
             });
         }
