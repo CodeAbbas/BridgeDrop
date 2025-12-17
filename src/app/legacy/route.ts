@@ -28,8 +28,8 @@ export async function GET() {
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { 
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: #f8fafc; /* Slate 50 */
-            color: #1e293b; /* Slate 800 */
+            background-color: #f8fafc;
+            color: #1e293b;
             margin: 0;
             padding: 20px;
             min-height: 100vh;
@@ -38,15 +38,13 @@ export async function GET() {
             justify-content: center;
         }
 
-        /* UTILS */
-        .hidden { display: none !important; }
+        /* UTILS - REMOVED !important TO FIX VISIBILITY BUG */
+        .hidden { display: none; }
+        .block { display: block; }
+        
         .flex { display: flex; }
-        .flex-col { flex-direction: column; }
-        .items-center { align-items: center; }
-        .justify-between { justify-content: space-between; }
         .text-center { text-align: center; }
         .mb-4 { margin-bottom: 16px; }
-        .mb-2 { margin-bottom: 8px; }
         .mt-4 { margin-top: 16px; }
 
         /* CARD */
@@ -54,15 +52,11 @@ export async function GET() {
             background: rgba(255, 255, 255, 0.95);
             width: 100%;
             max-width: 420px;
-            border-radius: 24px; /* Matches main app */
+            border-radius: 24px;
             padding: 32px;
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
             border: 1px solid rgba(255, 255, 255, 0.5);
         }
-
-        /* HEADERS */
-        h1 { margin: 0 0 8px 0; font-size: 24px; letter-spacing: -0.02em; color: #0f172a; }
-        p { margin: 0; color: #64748b; font-size: 14px; }
 
         /* STATUS BADGE */
         .status-badge {
@@ -94,8 +88,11 @@ export async function GET() {
             align-items: center;
             justify-content: space-between;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: background 0.2s ease;
             box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            /* Force visibility */
+            visibility: visible;
+            opacity: 1;
         }
         .action-btn:active { transform: scale(0.98); background: #f8fafc; }
         
@@ -152,22 +149,8 @@ export async function GET() {
             border-radius: 12px;
             padding: 12px 16px;
             margin-bottom: 8px;
-            animation: slideIn 0.3s ease-out;
-        }
-        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-        .file-item button {
-            background: #10b981;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 6px 12px;
-            font-size: 12px;
-            font-weight: 700;
-            cursor: pointer;
         }
 
-        /* FOOTER */
         .debug-log { 
             margin-top: 24px; 
             padding-top: 12px; 
@@ -206,8 +189,8 @@ export async function GET() {
 
     <div id="view-home" class="hidden">
         <div class="text-center mb-4">
-            <h1 style="font-size:28px; font-weight:800; color:#1e293b;">Legacy Mode</h1>
-            <p>Compatible with iOS 12+</p>
+            <h1 style="font-size:28px; font-weight:800; color:#1e293b; margin:0;">Legacy Mode</h1>
+            <p style="margin-top:4px;">Compatible with iOS 12+</p>
         </div>
 
         <div class="action-btn" onclick="startSend()">
@@ -323,16 +306,19 @@ export async function GET() {
         auth.onAuthStateChanged(u => {
             if(u) {
                 setStatus('Ready');
-                document.getElementById('view-home').style.display = 'block';
+                show('view-home'); // Use helper function to ensure cleaner class toggling
                 log("Auth: "+u.uid.slice(0,4));
             }
         });
     } catch(e) { log("Init Err: "+e.message); }
 
     function show(id) {
-        ['view-home','view-receive','view-transfer'].forEach(v => document.getElementById(v).style.display='none');
+        ['view-home','view-receive','view-transfer'].forEach(v => {
+            document.getElementById(v).style.display = 'none';
+        });
         document.getElementById(id).style.display = 'block';
     }
+    
     function startReceive() { show('view-receive'); }
     function startSend() {
         roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
