@@ -59,10 +59,8 @@ export async function GET() {
     <div id="view-transfer" class="hidden">
         <h2 id="room-display"></h2>
         
-        <!-- Files List -->
         <div id="file-list" style="margin-top:20px;"></div>
         
-        <!-- Action Buttons -->
         <button id="download-all-btn" onclick="downloadAllFiles()">Download All</button>
         <button id="clear-btn" class="btn-gray hidden" onclick="clearFiles()">Clear List</button>
         
@@ -211,17 +209,59 @@ export async function GET() {
                     receivedFiles.push({ name: fileMeta.name, url: url });
                     
                     if (receivedFiles.length > 1) document.getElementById('download-all-btn').style.display = 'block';
-                    // Show clear button once we have files
                     document.getElementById('clear-btn').style.display = 'block';
 
-                    const btnId = 'btn-' + Math.random().toString(36).substr(2, 9);
+                    // --- NEW LOGIC FOR INLINE IMAGES ---
                     const div = document.createElement('div');
                     div.className = 'file-item';
-                    div.innerHTML = '<span style="font-size:12px; overflow:hidden; text-overflow:ellipsis; width: 60%;">' + fileMeta.name + '</span> <button id="' + btnId + '">Open</button>';
+                    const isImage = fileMeta.mime.startsWith('image/');
+
+                    // 1. Create Header Row (Name + Button)
+                    const headerDiv = document.createElement('div');
+                    headerDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; width:100%;";
+
+                    const nameSpan = document.createElement('span');
+                    nameSpan.style.cssText = "font-size:12px; overflow:hidden; text-overflow:ellipsis; max-width: 60%; font-weight:bold;";
+                    nameSpan.innerText = fileMeta.name;
+
+                    const btn = document.createElement('button');
+                    btn.style.cssText = "width:auto; margin:0; padding:5px 10px; background: #28a745; color: white; border: none; border-radius: 4px;";
+                    btn.innerText = isImage ? 'Open Tab' : 'Download';
+                    btn.onclick = function() { triggerDownload(url, fileMeta.name); };
+
+                    headerDiv.appendChild(nameSpan);
+                    headerDiv.appendChild(btn);
+                    div.appendChild(headerDiv);
+
+                    // 2. If Image: Convert Blob to Base64 and Append
+                    if (isImage) {
+                        div.style.flexDirection = 'column'; 
+                        
+                        const imgContainer = document.createElement('div');
+                        imgContainer.style.cssText = "margin-top:10px; text-align:center; width:100%; min-height: 50px;";
+                        imgContainer.innerText = "Loading preview...";
+                        div.appendChild(imgContainer);
+
+                        const reader = new FileReader();
+                        reader.onload = function(e) {
+                            imgContainer.innerText = ""; 
+                            
+                            const img = document.createElement('img');
+                            img.src = e.target.result; // Data URL
+                            img.style.cssText = "max-width:100%; border-radius:4px; box-shadow:0 1px 3px rgba(0,0,0,0.2); display:block; margin: 0 auto;";
+                            
+                            const hint = document.createElement('p');
+                            hint.style.cssText = "font-size:10px; color:#555; margin-top:4px;";
+                            hint.innerText = "Long press image to Save";
+
+                            imgContainer.appendChild(img);
+                            imgContainer.appendChild(hint);
+                        };
+                        reader.readAsDataURL(blob);
+                    }
+                    // --- END NEW LOGIC ---
                     
                     document.getElementById('file-list').appendChild(div);
-                    document.getElementById(btnId).onclick = function() { triggerDownload(url, fileMeta.name); };
-                    
                     log("Done: " + fileMeta.name);
                 }
             } else fileChunks.push(d);
