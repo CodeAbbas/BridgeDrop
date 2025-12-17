@@ -13,10 +13,7 @@ export async function GET() {
   };
 
   if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
-    return new NextResponse("<h1>Config Error</h1><p>Missing API Keys</p>", { 
-      status: 500, 
-      headers: { 'content-type': 'text/html' } 
-    });
+    return new NextResponse("<h1>Config Error</h1><p>Missing API Keys</p>", { status: 500, headers: {'content-type':'text/html'} });
   }
 
   const html = `
@@ -25,92 +22,108 @@ export async function GET() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BridgeDrop Lite | P2P</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>BridgeDrop Lite</title>
+    <style>
+        /* Legacy CSS for iOS 12 Compatibility */
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f7f9; padding: 15px; color: #333; margin: 0; }
+        .container { background: #ffffff; border-radius: 15px; padding: 25px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 400px; margin: 20px auto; text-align: center; border: 1px solid #eee; }
+        h1 { margin: 0 0 10px 0; font-size: 22px; color: #222; }
+        #status { font-size: 12px; font-weight: bold; color: #888; text-transform: uppercase; margin-bottom: 20px; }
+        
+        button { width: 100%; padding: 16px; margin: 8px 0; border: none; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; -webkit-appearance: none; }
+        .btn-blue { background: #007bff; color: white; }
+        .btn-green { background: #28a745; color: white; }
+        .btn-outline-red { background: transparent; color: #dc3545; border: 2px solid #dc3545; margin-top: 15px; }
+        
+        input[type="text"] { width: 90%; padding: 12px; font-size: 28px; text-align: center; border: 2px solid #ddd; border-radius: 10px; margin-bottom: 10px; font-family: monospace; text-transform: uppercase; }
+        .room-box { background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #e9ecef; }
+        .room-label { font-size: 10px; color: #999; display: block; margin-bottom: 5px; }
+        .room-id { font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #333; }
+        
+        .file-item { background: #eef9f1; padding: 12px; margin-bottom: 8px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #d4edda; }
+        .file-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left; padding-right: 10px; }
+        .open-btn { width: auto; padding: 6px 12px; margin: 0; font-size: 12px; background: #28a745; color: white; }
+        
+        .hidden { display: none; }
+        #debug { font-size: 9px; color: #aaa; text-align: left; margin-top: 25px; border-top: 1px solid #eee; padding-top: 10px; max-height: 100px; overflow-y: auto; font-family: monospace; }
+        
+        /* Progress Bar */
+        #progress-wrap { width: 100%; bg: #eee; height: 6px; border-radius: 3px; overflow: hidden; margin: 10px 0; display: none; }
+        #progress-bar { width: 0%; height: 100%; background: #007bff; transition: width 0.3s; }
+    </style>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
-    <style>
-        .log-box::-webkit-scrollbar { width: 4px; }
-        .log-box::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-    </style>
 </head>
-<body class="bg-slate-50 text-slate-900 font-sans min-h-screen flex items-center justify-center p-4">
+<body>
+<div class="container">
+    <h1>🍏 BridgeDrop Lite</h1>
+    <div id="status">Connecting...</div>
 
-<div class="max-w-md w-full bg-white rounded-2xl shadow-xl p-6 border border-slate-100">
-    <header class="text-center mb-6">
-        <h1 class="text-2xl font-bold text-blue-600">🍏 BridgeDrop Lite</h1>
-        <div id="status" class="text-sm font-medium text-slate-500 mt-1 uppercase tracking-wider">Initializing...</div>
-    </header>
-
-    <div id="view-home" class="hidden space-y-3">
-        <button onclick="startReceive()" class="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition-all transform active:scale-95 shadow-lg shadow-blue-200">⬇️ Receive Files</button>
-        <button onclick="startSend()" class="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold transition-all transform active:scale-95 shadow-lg shadow-emerald-200">⬆️ Send Files</button>
+    <div id="view-home" class="hidden">
+        <button class="btn-blue" onclick="startReceive()">⬇️ Receive Files</button>
+        <button class="btn-green" onclick="startSend()">⬆️ Send Files</button>
     </div>
 
-    <div id="view-receive" class="hidden space-y-4 text-center">
-        <p class="text-slate-600">Enter the 6-digit connection code:</p>
-        <input type="text" id="code-input" maxlength="6" placeholder="______" 
-               class="w-full text-4xl text-center font-mono tracking-widest border-2 border-slate-200 rounded-xl py-3 focus:border-blue-500 focus:outline-none uppercase">
-        <button onclick="joinRoom()" class="w-full py-3 bg-blue-600 text-white rounded-xl font-bold">Connect</button>
-        <button onclick="show('view-home')" class="text-slate-400 text-sm">Back</button>
+    <div id="view-receive" class="hidden">
+        <p style="font-size: 14px; color: #666;">Enter 6-digit code:</p>
+        <input type="text" id="code-input" maxlength="6" placeholder="------">
+        <button class="btn-blue" onclick="joinRoom()">Connect</button>
+        <button style="background:none; color:#999; font-size:13px;" onclick="show('view-home')">Cancel</button>
     </div>
 
-    <div id="view-transfer" class="hidden space-y-4">
-        <div class="bg-slate-100 rounded-lg p-3 text-center">
-            <span class="text-xs text-slate-500 block uppercase font-bold">Room Code</span>
-            <h2 id="room-display" class="text-3xl font-mono font-bold text-slate-800 tracking-widest"></h2>
+    <div id="view-transfer" class="hidden">
+        <div class="room-box">
+            <span class="room-label">ROOM CODE</span>
+            <div id="room-display" class="room-id"></div>
         </div>
         
-        <div id="progress-container" class="hidden w-full bg-slate-200 rounded-full h-2">
-            <div id="progress-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-        </div>
-
-        <div id="file-list" class="space-y-2 max-h-60 overflow-y-auto"></div>
+        <div id="progress-wrap"><div id="progress-bar"></div></div>
         
-        <div id="actions-area" class="flex flex-col gap-2">
-            <button id="download-all-btn" class="hidden w-full py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md" onclick="downloadAllFiles()">Download All</button>
-            <button id="clear-btn" class="hidden w-full py-3 border-2 border-rose-500 text-rose-600 hover:bg-rose-50 rounded-xl font-bold" onclick="clearFiles()">🗑 Wipe & Ready Next</button>
+        <div id="file-list"></div>
+        
+        <div id="sender-area" class="hidden" style="margin-top: 20px; border-top: 1px solid #eee; pt: 15px;">
+            <input type="file" id="file-input" multiple style="font-size: 12px; margin-bottom: 10px;">
+            <button class="btn-blue" onclick="handleSend()">Send Selected Files</button>
         </div>
 
-        <div id="sender-area" class="hidden space-y-3 pt-4 border-t border-slate-100">
-            <input type="file" id="file-input" multiple class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
-            <button class="w-full py-3 bg-blue-600 text-white rounded-xl font-bold" onclick="handleSend()">Send Selected Files</button>
-        </div>
+        <button id="download-all-btn" class="hidden btn-blue" onclick="downloadAllFiles()">Download All</button>
+        <button id="clear-btn" class="hidden btn-outline-red" onclick="clearFiles()">🗑 Wipe Memory</button>
     </div>
 
-    <div id="debug" class="log-box mt-6 pt-4 border-t border-slate-50 text-[10px] text-slate-400 font-mono h-24 overflow-y-auto bg-slate-50 p-2 rounded"></div>
+    <div id="debug"></div>
 </div>
 
 <script>
+    /* Core Logic with iOS 12 Polyfill Support */
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
     let receivedFiles = [];
-    const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }, { urls: 'stun:stun2.l.google.com:19302' }] };
+    const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }] };
 
-    function log(m) {
-        const d = document.getElementById('debug');
-        d.innerHTML += "<div>> "+m+"</div>";
+    function log(m) { 
+        var d = document.getElementById('debug');
+        d.innerHTML += "<div>> " + m + "</div>"; 
         d.scrollTop = d.scrollHeight;
     }
 
-    // WebRTC Signaling Logic (Similar to your version but with clean room-close)
     try {
         firebase.initializeApp(firebaseConfig);
         db = firebase.firestore();
         auth = firebase.auth();
-        auth.signInAnonymously().catch(e => log("Auth Error: "+e.message));
-        auth.onAuthStateChanged(u => {
+        auth.signInAnonymously().catch(function(e) { log("Auth Error: " + e.message); });
+        auth.onAuthStateChanged(function(u) {
             if(u) {
                 document.getElementById('status').innerText = "System Ready";
                 show('view-home');
             }
         });
-    } catch(e) { log("Init Error: "+e.message); }
+    } catch(e) { log("Init Error: " + e.message); }
 
     function show(id) {
-        ['view-home','view-receive','view-transfer'].forEach(v => document.getElementById(v).classList.add('hidden'));
-        document.getElementById(id).classList.remove('hidden');
+        var views = ['view-home','view-receive','view-transfer'];
+        for(var i=0; i<views.length; i++) { document.getElementById(views[i]).style.display = 'none'; }
+        document.getElementById(id).style.display = 'block';
     }
 
     function startSend() {
@@ -118,12 +131,12 @@ export async function GET() {
         setupPeer(true);
         show('view-transfer');
         document.getElementById('room-display').innerText = roomId;
-        document.getElementById('sender-area').classList.remove('hidden');
+        document.getElementById('sender-area').style.display = 'block';
     }
 
     function joinRoom() {
         roomId = document.getElementById('code-input').value.toUpperCase();
-        if(roomId.length!==6) return;
+        if(roomId.length !== 6) return;
         setupPeer(false);
         show('view-transfer');
         document.getElementById('room-display').innerText = roomId;
@@ -131,35 +144,33 @@ export async function GET() {
 
     function setupPeer(isInit) {
         peerConnection = new RTCPeerConnection(rtcConfig);
-        peerConnection.onicecandidate = e => {
+        peerConnection.onicecandidate = function(e) {
             if(e.candidate) db.collection('rooms').doc(roomId).collection(isInit?'callerCandidates':'calleeCandidates').add(e.candidate.toJSON());
         };
-        peerConnection.onconnectionstatechange = () => {
-            const state = peerConnection.connectionState;
-            document.getElementById('status').innerText = state;
-            if(state === 'connected') log("P2P Link Established");
+        peerConnection.onconnectionstatechange = function() {
+            document.getElementById('status').innerText = peerConnection.connectionState;
         };
 
         if(isInit) {
-            dataChannel = peerConnection.createDataChannel("bridge-drop", { ordered: true });
+            dataChannel = peerConnection.createDataChannel("bridge-drop");
             setupDataHandlers();
-            peerConnection.createOffer().then(o => peerConnection.setLocalDescription(o)).then(() => {
+            peerConnection.createOffer().then(function(o) { return peerConnection.setLocalDescription(o); }).then(function() {
                 db.collection('rooms').doc(roomId).set({ offer: {type: 'offer', sdp: peerConnection.localDescription.sdp}, createdAt: Date.now() });
             });
-            db.collection('rooms').doc(roomId).onSnapshot(s => {
-                const d = s.data();
-                if(!peerConnection.currentRemoteDescription && d?.answer) peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
+            db.collection('rooms').doc(roomId).onSnapshot(function(s) {
+                var d = s.data();
+                if(!peerConnection.currentRemoteDescription && d && d.answer) peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
             });
             listenCandidates('calleeCandidates');
         } else {
-            peerConnection.ondatachannel = e => { dataChannel = e.channel; setupDataHandlers(); };
-            db.collection('rooms').doc(roomId).onSnapshot(s => {
-                const d = s.data();
-                if (d?.offer && !peerConnection.currentRemoteDescription) {
+            peerConnection.ondatachannel = function(e) { dataChannel = e.channel; setupDataHandlers(); };
+            db.collection('rooms').doc(roomId).onSnapshot(function(s) {
+                var d = s.data();
+                if (d && d.offer && !peerConnection.currentRemoteDescription) {
                     peerConnection.setRemoteDescription(new RTCSessionDescription(d.offer))
-                        .then(() => peerConnection.createAnswer())
-                        .then(a => peerConnection.setLocalDescription(a))
-                        .then(() => db.collection('rooms').doc(roomId).update({answer: {type:'answer', sdp: peerConnection.localDescription.sdp}}));
+                        .then(function() { return peerConnection.createAnswer(); })
+                        .then(function(a) { return peerConnection.setLocalDescription(a); })
+                        .then(function() { db.collection('rooms').doc(roomId).update({answer: {type:'answer', sdp: peerConnection.localDescription.sdp}}); });
                     listenCandidates('callerCandidates');
                 }
             });
@@ -167,94 +178,72 @@ export async function GET() {
     }
 
     function listenCandidates(col) {
-        db.collection('rooms').doc(roomId).collection(col).onSnapshot(s => {
-            s.docChanges().forEach(c => { if(c.type==='added') peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data())); });
+        db.collection('rooms').doc(roomId).collection(col).onSnapshot(function(s) {
+            s.docChanges().forEach(function(c) { if(c.type==='added') peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data())); });
         });
     }
 
     function setupDataHandlers() {
-        dataChannel.binaryType = 'arraybuffer';
-        dataChannel.onmessage = e => {
+        dataChannel.onmessage = function(e) {
             if (typeof e.data === 'string') {
-                const m = JSON.parse(e.data);
-                if (m.type === 'meta') {
-                    fileMeta = m;
-                    fileChunks = [];
-                    log("Incoming: " + m.name);
-                    updateProgress(0);
-                } else if (m.type === 'end') {
-                    finalizeFile();
-                }
-            } else {
-                fileChunks.push(e.data);
-            }
+                var m = JSON.parse(e.data);
+                if (m.type === 'meta') { fileMeta = m; fileChunks = []; log("Rx: " + m.name); }
+                else if (m.type === 'end') { finalizeFile(); }
+            } else { fileChunks.push(e.data); }
         };
     }
 
     function finalizeFile() {
-        const blob = new Blob(fileChunks, { type: fileMeta.mime });
-        const url = URL.createObjectURL(blob);
+        var blob = new Blob(fileChunks, { type: fileMeta.mime });
+        var url = URL.createObjectURL(blob);
         receivedFiles.push({ name: fileMeta.name, url: url });
         
-        const div = document.createElement('div');
-        div.className = "flex items-center justify-between bg-emerald-50 p-3 rounded-xl border border-emerald-100";
-        div.innerHTML = \`<span class="text-xs font-medium truncate w-40 text-emerald-800">\${fileMeta.name}</span>
-                        <button onclick="window.open('\${url}')" class="bg-emerald-600 text-white px-3 py-1 rounded-lg text-xs font-bold">Open</button>\`;
-        document.getElementById('file-list').appendChild(div);
+        var div = document.createElement('div');
+        div.className = "file-item";
+        div.innerHTML = '<span class="file-name">' + fileMeta.name + '</span><button class="open-btn">Open</button>';
+        div.querySelector('button').onclick = function() { window.open(url); };
         
-        document.getElementById('download-all-btn').classList.remove('hidden');
-        document.getElementById('clear-btn').classList.remove('hidden');
-        log("Received: " + fileMeta.name);
-        updateProgress(0);
+        document.getElementById('file-list').appendChild(div);
+        document.getElementById('download-all-btn').style.display = 'block';
+        document.getElementById('clear-btn').style.display = 'block';
     }
 
     async function handleSend() {
-        const files = document.getElementById('file-input').files;
+        var files = document.getElementById('file-input').files;
         if(!files.length || !dataChannel) return;
 
-        for (let f of files) {
+        for (var i=0; i<files.length; i++) {
+            var f = files[i];
             log("Sending: " + f.name);
             dataChannel.send(JSON.stringify({type:'meta', name:f.name, mime:f.type}));
             
-            const CHUNK_SIZE = 16384; 
-            const buffer = await f.arrayBuffer();
+            var CHUNK_SIZE = 16384;
+            var buffer = await f.arrayBuffer();
             
-            for (let i = 0; i < buffer.byteLength; i += CHUNK_SIZE) {
-                // Flow control to prevent memory overflow
-                while (dataChannel.bufferedAmount > 1024 * 1024) {
-                    await new Promise(r => setTimeout(r, 100));
+            for (var offset = 0; offset < buffer.byteLength; offset += CHUNK_SIZE) {
+                while (dataChannel.bufferedAmount > 1000000) {
+                    await new Promise(function(r) { setTimeout(r, 100); });
                 }
-                dataChannel.send(buffer.slice(i, i + CHUNK_SIZE));
-                if (i % (CHUNK_SIZE * 10) === 0) updateProgress((i / buffer.byteLength) * 100);
+                dataChannel.send(buffer.slice(offset, offset + CHUNK_SIZE));
             }
             dataChannel.send(JSON.stringify({type:'end'}));
             log("Sent: " + f.name);
         }
-        updateProgress(0);
-    }
-
-    function updateProgress(pct) {
-        const container = document.getElementById('progress-container');
-        const bar = document.getElementById('progress-bar');
-        container.classList.remove('hidden');
-        bar.style.width = pct + "%";
-        if(pct === 0) container.classList.add('hidden');
     }
 
     function clearFiles() {
-        receivedFiles.forEach(f => URL.revokeObjectURL(f.url));
+        receivedFiles.forEach(function(f) { URL.revokeObjectURL(f.url); });
         receivedFiles = [];
-        fileChunks = [];
         document.getElementById('file-list').innerHTML = '';
-        document.getElementById('download-all-btn').classList.add('hidden');
-        document.getElementById('clear-btn').classList.add('hidden');
-        log("Memory Purged. Ready.");
+        document.getElementById('download-all-btn').style.display = 'none';
+        document.getElementById('clear-btn').style.display = 'none';
+        log("Memory Cleared.");
     }
 
     function downloadAllFiles() {
-        receivedFiles.forEach((f, i) => {
-            setTimeout(() => {
-                const a = document.createElement('a');
+        receivedFiles.forEach(function(f, i) {
+            setTimeout(function() {
+                var a = document.createElement('a');
                 a.href = f.url;
                 a.download = f.name;
                 a.click();
