@@ -30,13 +30,14 @@ export async function GET() {
         button { width: 100%; padding: 15px; margin: 10px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
         .btn-blue { background: #007bff; color: white; }
         .btn-green { background: #28a745; color: white; }
-        .btn-red { background: #dc3545; color: white; } /* New Red Button */
+        .btn-gray { background: #6c757d; color: white; margin-top: 10px; }
         input { width: 90%; padding: 10px; font-size: 24px; text-align: center; border: 2px solid #ccc; border-radius: 8px; margin-bottom: 10px; text-transform: uppercase; }
         #status { font-weight: bold; margin: 10px 0; color: #666; }
         .hidden { display: none; }
         .file-item { background: #e8f5e9; padding: 10px; margin-bottom: 5px; border-radius: 8px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
         .file-item button { width: auto; margin: 0; padding: 5px 10px; font-size: 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
         .log-box { font-size: 10px; color: #999; text-align: left; margin-top: 20px; border-top: 1px solid #eee; padding-top: 5px; }
+        #download-all-btn { background: #6f42c1; color: white; margin-top: 15px; display: none; }
     </style>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
@@ -61,35 +62,35 @@ export async function GET() {
         <!-- Files List -->
         <div id="file-list" style="margin-top:20px;"></div>
         
-        <!-- Actions -->
-        <button id="download-all-btn" class="hidden btn-blue" onclick="downloadAllFiles()">Download All (Sequential)</button>
-        <button id="clear-btn" class="hidden btn-red" onclick="clearFiles()">🗑 Wipe & Ready Next</button>
+        <!-- Action Buttons -->
+        <button id="download-all-btn" onclick="downloadAllFiles()">Download All</button>
+        <button id="clear-btn" class="btn-gray hidden" onclick="clearFiles()">Clear List</button>
         
         <div id="sender-area" class="hidden">
             <input type="file" id="file-input" multiple>
             <button class="btn-blue" onclick="sendFiles()">Send Selected Files</button>
         </div>
     </div>
+    <div id="debug" class="log-box"></div>
 </div>
 <script>
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
-    function log(m) { console.log(m); }
+    function log(m) { console.log(m); document.getElementById('debug').innerHTML += "<div>"+m+"</div>"; }
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
-    
-    // Store file objects {name, url}
     let receivedFiles = []; 
-    
     const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }] };
     const ROOM_TTL = 24 * 60 * 60 * 1000;
 
     function triggerDownload(url, filename) {
         var win = window.open(url, '_blank');
-        if (!win) window.location.href = url;
+        if (!win) {
+            window.location.href = url;
+        }
     }
 
     function downloadAllFiles() {
         if (receivedFiles.length === 0) return;
-        alert("Starting sequential download. Please keep this tab open.");
+        alert("Starting downloads...");
         let i = 0;
         function next() {
             if (i >= receivedFiles.length) return;
@@ -101,28 +102,13 @@ export async function GET() {
         next();
     }
 
-    // CRITICAL: Memory Cleanup
+    // NEW: Clear function to reset UI for next batch
     function clearFiles() {
-        // 1. Revoke all Blob URLs to free iOS memory
-        receivedFiles.forEach(f => {
-            if (f.url) URL.revokeObjectURL(f.url);
-        });
-        receivedFiles = []; // Reset array
-
-        // 2. Clear UI
         document.getElementById('file-list').innerHTML = '';
+        receivedFiles = [];
         document.getElementById('download-all-btn').style.display = 'none';
         document.getElementById('clear-btn').style.display = 'none';
-        
-        log("Memory cleared. Ready for new batch.");
-        
-        // 3. Keep Connection Open (Do NOT close peerConnection)
-        // Just verify it's still alive
-        if (peerConnection && peerConnection.connectionState !== 'connected') {
-            log("Warning: Connection lost. Reconnecting might be needed.");
-        } else {
-            log("Connection active. Sender can send now.");
-        }
+        log("List cleared. Ready for more.");
     }
 
     try {
@@ -224,7 +210,8 @@ export async function GET() {
                     
                     receivedFiles.push({ name: fileMeta.name, url: url });
                     
-                    document.getElementById('download-all-btn').style.display = 'block';
+                    if (receivedFiles.length > 1) document.getElementById('download-all-btn').style.display = 'block';
+                    // Show clear button once we have files
                     document.getElementById('clear-btn').style.display = 'block';
 
                     const btnId = 'btn-' + Math.random().toString(36).substr(2, 9);
