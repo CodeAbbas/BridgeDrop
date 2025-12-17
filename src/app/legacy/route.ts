@@ -22,55 +22,254 @@ export async function GET() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BridgeDrop Lite</title>
+    <title>BridgeDrop Legacy</title>
     <style>
-        body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 20px; text-align: center; color: #333; }
-        .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 400px; margin: 0 auto; }
-        h1 { margin-top: 0; font-size: 20px; }
-        button { width: 100%; padding: 15px; margin: 10px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
-        .btn-blue { background: #007bff; color: white; }
-        .btn-green { background: #28a745; color: white; }
-        .btn-gray { background: #6c757d; color: white; margin-top: 10px; }
-        input { width: 90%; padding: 10px; font-size: 24px; text-align: center; border: 2px solid #ccc; border-radius: 8px; margin-bottom: 10px; text-transform: uppercase; }
-        #status { font-weight: bold; margin: 10px 0; color: #666; }
-        .hidden { display: none; }
-        .file-item { background: #e8f5e9; padding: 10px; margin-bottom: 5px; border-radius: 8px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
-        .file-item button { width: auto; margin: 0; padding: 5px 10px; font-size: 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        .log-box { font-size: 10px; color: #999; text-align: left; margin-top: 20px; border-top: 1px solid #eee; padding-top: 5px; }
-        #download-all-btn { background: #6f42c1; color: white; margin-top: 15px; display: none; }
+        /* RESET & BASE */
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8fafc; /* Slate 50 */
+            color: #1e293b; /* Slate 800 */
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* UTILS */
+        .hidden { display: none !important; }
+        .flex { display: flex; }
+        .flex-col { flex-direction: column; }
+        .items-center { align-items: center; }
+        .justify-between { justify-content: space-between; }
+        .text-center { text-align: center; }
+        .mb-4 { margin-bottom: 16px; }
+        .mb-2 { margin-bottom: 8px; }
+        .mt-4 { margin-top: 16px; }
+
+        /* CARD */
+        .card { 
+            background: rgba(255, 255, 255, 0.95);
+            width: 100%;
+            max-width: 420px;
+            border-radius: 24px; /* Matches main app */
+            padding: 32px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+        }
+
+        /* HEADERS */
+        h1 { margin: 0 0 8px 0; font-size: 24px; letter-spacing: -0.02em; color: #0f172a; }
+        p { margin: 0; color: #64748b; font-size: 14px; }
+
+        /* STATUS BADGE */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 16px;
+            border-radius: 9999px;
+            background: #f1f5f9;
+            color: #475569;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 24px;
+        }
+        .status-badge svg { margin-right: 6px; width: 14px; height: 14px; }
+        .status-badge.connected { background: rgba(16, 185, 129, 0.1); color: #047857; }
+        .status-badge.error { background: rgba(239, 68, 68, 0.1); color: #b91c1c; }
+
+        /* ACTION BUTTONS (HOME) */
+        .action-btn {
+            width: 100%;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        }
+        .action-btn:active { transform: scale(0.98); background: #f8fafc; }
+        
+        .icon-box {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 16px;
+        }
+        .icon-box.blue { background: rgba(219, 234, 254, 0.5); color: #2563eb; }
+        .icon-box.green { background: rgba(209, 250, 229, 0.5); color: #059669; }
+        
+        .btn-text { text-align: left; flex: 1; }
+        .btn-title { font-weight: 700; color: #1e293b; font-size: 16px; display: block; }
+        .btn-subtitle { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; margin-top: 2px; display: block; }
+
+        /* INPUTS */
+        .code-input {
+            width: 100%;
+            font-family: monospace;
+            font-size: 32px;
+            text-align: center;
+            border: 2px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 16px;
+            margin: 20px 0;
+            background: #f8fafc;
+            color: #1e293b;
+            text-transform: uppercase;
+            outline: none;
+        }
+        .code-input:focus { border-color: #3b82f6; background: white; }
+
+        .primary-btn {
+            width: 100%;
+            background: #3b82f6;
+            color: white;
+            font-weight: 700;
+            padding: 16px;
+            border-radius: 12px;
+            border: none;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .primary-btn:active { background: #2563eb; }
+
+        /* FILE LIST */
+        .file-item {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .file-item button {
+            background: #10b981;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        /* FOOTER */
+        .debug-log { 
+            margin-top: 24px; 
+            padding-top: 12px; 
+            border-top: 1px solid #f1f5f9; 
+            font-family: monospace; 
+            font-size: 10px; 
+            color: #94a3b8; 
+            text-align: left;
+            max-height: 100px;
+            overflow-y: auto;
+        }
     </style>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
+
 <div class="card">
-    <h1>🍏 BridgeDrop Lite</h1>
-    <div id="status">Connecting...</div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <div style="display:flex; align-items:center;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:8px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+            <span style="font-weight:600; font-size:18px;">BridgeDrop</span>
+        </div>
+        <button onclick="window.location.reload()" style="background:transparent; border:none; padding:8px; width:auto; cursor:pointer;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        </button>
+    </div>
+
+    <div class="text-center">
+        <div id="status-badge" class="status-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+            <span id="status">Connecting...</span>
+        </div>
+    </div>
+
     <div id="view-home" class="hidden">
-        <button class="btn-blue" onclick="startReceive()">⬇️ Receive Files</button>
-        <button class="btn-green" onclick="startSend()">⬆️ Send Files</button>
+        <div class="text-center mb-4">
+            <h1 style="font-size:28px; font-weight:800; color:#1e293b;">Legacy Mode</h1>
+            <p>Compatible with iOS 12+</p>
+        </div>
+
+        <div class="action-btn" onclick="startSend()">
+            <div style="display:flex; align-items:center;">
+                <div class="icon-box blue">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+                </div>
+                <div class="btn-text">
+                    <span class="btn-title">Send</span>
+                    <span class="btn-subtitle">Create Room</span>
+                </div>
+            </div>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </div>
+
+        <div class="action-btn" onclick="startReceive()">
+            <div style="display:flex; align-items:center;">
+                <div class="icon-box green">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+                </div>
+                <div class="btn-text">
+                    <span class="btn-title">Receive</span>
+                    <span class="btn-subtitle">Enter Code</span>
+                </div>
+            </div>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </div>
     </div>
-    <div id="view-receive" class="hidden">
-        <p>Enter Code:</p>
-        <input type="text" id="code-input" maxlength="6" placeholder="CODE">
-        <button class="btn-blue" onclick="joinRoom()">Connect</button>
+
+    <div id="view-receive" class="hidden text-center">
+        <h2 style="color:#334155; margin-bottom:8px;">Enter Room Code</h2>
+        <input type="text" id="code-input" class="code-input" maxlength="6" placeholder="XXXXXX">
+        <button class="primary-btn" onclick="joinRoom()">Connect</button>
+        <button onclick="show('view-home')" style="background:none; border:none; color:#64748b; margin-top:16px; font-size:14px; text-decoration:underline; cursor:pointer;">Cancel</button>
     </div>
+
     <div id="view-transfer" class="hidden">
-        <h2 id="room-display"></h2>
+        <div class="text-center">
+            <span style="font-size:10px; color:#94a3b8; font-weight:700; text-transform:uppercase; letter-spacing:1px;">Room ID</span>
+            <div id="room-display" style="font-family:monospace; font-size:32px; font-weight:700; color:#1e293b; margin:4px 0 20px 0;"></div>
+        </div>
         
         <div id="file-list" style="margin-top:20px;"></div>
         
-        <button id="download-all-btn" onclick="downloadAllFiles()">Download All</button>
-        <button id="clear-btn" class="btn-gray hidden" onclick="clearFiles()">Clear List</button>
+        <button id="download-all-btn" class="primary-btn mt-4 hidden" onclick="downloadAllFiles()">Download All</button>
         
-        <div id="sender-area" class="hidden">
-            <input type="file" id="file-input" multiple>
-            <button class="btn-blue" onclick="sendFiles()">Send Selected Files</button>
+        <button id="clear-btn" class="hidden" onclick="clearFiles()" style="width:100%; padding:12px; background:#f1f5f9; color:#475569; border:none; border-radius:12px; font-weight:700; margin-top:12px; cursor:pointer;">
+            Clear List
+        </button>
+        
+        <div id="sender-area" class="hidden mt-4">
+            <label style="display:block; border:2px dashed #cbd5e1; border-radius:16px; padding:32px 16px; text-align:center; cursor:pointer; background:#f8fafc;">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:8px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span style="display:block; font-weight:600; color:#334155;">Tap to Send Files</span>
+                <input type="file" id="file-input" multiple style="display:none;" onchange="sendFiles()">
+            </label>
         </div>
     </div>
-    <div id="debug" class="log-box"></div>
+
+    <div id="debug" class="debug-log"></div>
 </div>
+
 <script>
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
     function log(m) { console.log(m); document.getElementById('debug').innerHTML += "<div>"+m+"</div>"; }
@@ -81,14 +280,20 @@ export async function GET() {
 
     function triggerDownload(url, filename) {
         var win = window.open(url, '_blank');
-        if (!win) {
-            window.location.href = url;
-        }
+        if (!win) { window.location.href = url; }
+    }
+
+    function setStatus(state) {
+        const el = document.getElementById('status-badge');
+        const txt = document.getElementById('status');
+        el.className = 'status-badge';
+        if(state === 'connected') { el.classList.add('connected'); txt.innerText = "Connected"; }
+        else if(state === 'error') { el.classList.add('error'); txt.innerText = "Error"; }
+        else { txt.innerText = state; }
     }
 
     function downloadAllFiles() {
         if (receivedFiles.length === 0) return;
-        alert("Starting downloads...");
         let i = 0;
         function next() {
             if (i >= receivedFiles.length) return;
@@ -100,13 +305,12 @@ export async function GET() {
         next();
     }
 
-    // NEW: Clear function to reset UI for next batch
     function clearFiles() {
         document.getElementById('file-list').innerHTML = '';
         receivedFiles = [];
         document.getElementById('download-all-btn').style.display = 'none';
         document.getElementById('clear-btn').style.display = 'none';
-        log("List cleared. Ready for more.");
+        log("Cleared.");
     }
 
     try {
@@ -118,7 +322,7 @@ export async function GET() {
             .catch(e => log("Auth Error: "+e.message));
         auth.onAuthStateChanged(u => {
             if(u) {
-                document.getElementById('status').innerText = "Ready";
+                setStatus('Ready');
                 document.getElementById('view-home').style.display = 'block';
                 log("Auth: "+u.uid.slice(0,4));
             }
@@ -147,11 +351,16 @@ export async function GET() {
 
     function setupPeer(isInit) {
         log("Peer Init...");
+        setStatus('Connecting...');
         peerConnection = new RTCPeerConnection(rtcConfig);
         peerConnection.onicecandidate = e => {
             if(e.candidate) db.collection('rooms').doc(roomId).collection(isInit?'callerCandidates':'calleeCandidates').add(e.candidate.toJSON());
         };
-        peerConnection.onconnectionstatechange = () => document.getElementById('status').innerText = peerConnection.connectionState;
+        peerConnection.onconnectionstatechange = () => {
+            if(peerConnection.connectionState === 'connected') setStatus('connected');
+            else if(peerConnection.connectionState === 'failed') setStatus('error');
+            else setStatus(peerConnection.connectionState);
+        };
 
         if(isInit) {
             dataChannel = peerConnection.createDataChannel("file");
@@ -173,8 +382,7 @@ export async function GET() {
                 if(s.exists) {
                     const d = s.data();
                     if (d.createdAt && (Date.now() - d.createdAt > ROOM_TTL)) {
-                        log("Room Expired!");
-                        document.getElementById('status').innerText = "Expired";
+                        setStatus('error');
                         return;
                     }
                     if (!peerConnection.currentRemoteDescription && d.offer) {
@@ -196,7 +404,7 @@ export async function GET() {
     }
 
     function setupData() {
-        dataChannel.onopen = () => { document.getElementById('status').innerText = "Connected"; log("P2P Open"); };
+        dataChannel.onopen = () => { setStatus('connected'); log("P2P Open"); };
         dataChannel.onmessage = e => {
             const d = e.data;
             if(typeof d === 'string') {
@@ -211,7 +419,7 @@ export async function GET() {
                     if (receivedFiles.length > 1) document.getElementById('download-all-btn').style.display = 'block';
                     document.getElementById('clear-btn').style.display = 'block';
 
-                    // --- NEW LOGIC FOR INLINE IMAGES ---
+                    /* --- LEGACY IMAGE FIX: BASE64 RENDER --- */
                     const div = document.createElement('div');
                     div.className = 'file-item';
                     const isImage = fileMeta.mime.startsWith('image/');
@@ -221,12 +429,11 @@ export async function GET() {
                     headerDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; width:100%;";
 
                     const nameSpan = document.createElement('span');
-                    nameSpan.style.cssText = "font-size:12px; overflow:hidden; text-overflow:ellipsis; max-width: 60%; font-weight:bold;";
+                    nameSpan.style.cssText = "font-size:12px; overflow:hidden; text-overflow:ellipsis; max-width: 60%; font-weight:bold; color:#064e3b;";
                     nameSpan.innerText = fileMeta.name;
 
                     const btn = document.createElement('button');
-                    btn.style.cssText = "width:auto; margin:0; padding:5px 10px; background: #28a745; color: white; border: none; border-radius: 4px;";
-                    btn.innerText = isImage ? 'Open Tab' : 'Download';
+                    btn.innerText = isImage ? 'Open Tab' : 'Save';
                     btn.onclick = function() { triggerDownload(url, fileMeta.name); };
 
                     headerDiv.appendChild(nameSpan);
@@ -235,31 +442,32 @@ export async function GET() {
 
                     // 2. If Image: Convert Blob to Base64 and Append
                     if (isImage) {
-                        div.style.flexDirection = 'column'; 
+                        div.style.flexDirection = 'column'; // Stack vertically
                         
                         const imgContainer = document.createElement('div');
-                        imgContainer.style.cssText = "margin-top:10px; text-align:center; width:100%; min-height: 50px;";
+                        imgContainer.style.cssText = "margin-top:12px; text-align:center; width:100%; min-height:50px;";
                         imgContainer.innerText = "Loading preview...";
                         div.appendChild(imgContainer);
 
+                        // Use FileReader to get Base64 Data URL (Bypasses blob: network check on iOS)
                         const reader = new FileReader();
                         reader.onload = function(e) {
-                            imgContainer.innerText = ""; 
+                            imgContainer.innerText = "";
                             
                             const img = document.createElement('img');
-                            img.src = e.target.result; // Data URL
-                            img.style.cssText = "max-width:100%; border-radius:4px; box-shadow:0 1px 3px rgba(0,0,0,0.2); display:block; margin: 0 auto;";
+                            img.src = e.target.result; 
+                            img.style.cssText = "max-width:100%; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); display:block; margin:0 auto;";
                             
                             const hint = document.createElement('p');
-                            hint.style.cssText = "font-size:10px; color:#555; margin-top:4px;";
-                            hint.innerText = "Long press image to Save";
+                            hint.style.cssText = "font-size:11px; color:#64748b; margin-top:8px; font-weight:500;";
+                            hint.innerText = "Long press image to Save to Photos";
 
                             imgContainer.appendChild(img);
                             imgContainer.appendChild(hint);
                         };
                         reader.readAsDataURL(blob);
                     }
-                    // --- END NEW LOGIC ---
+                    /* --- END FIX --- */
                     
                     document.getElementById('file-list').appendChild(div);
                     log("Done: " + fileMeta.name);
