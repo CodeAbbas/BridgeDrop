@@ -31,31 +31,36 @@ export async function GET() {
             background-color: #f8fafc;
             color: #1e293b;
             margin: 0;
-            padding: 20px;
+            padding: 20px; /* Safe padding for x-axis */
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
         }
 
-        /* UTILS - REMOVED !important TO FIX VISIBILITY BUG */
+        /* UTILS */
         .hidden { display: none; }
-        .block { display: block; }
-        
         .flex { display: flex; }
         .text-center { text-align: center; }
         .mb-4 { margin-bottom: 16px; }
         .mt-4 { margin-top: 16px; }
 
-        /* CARD */
+        /* CARD - Responsive Width */
         .card { 
             background: rgba(255, 255, 255, 0.95);
             width: 100%;
-            max-width: 420px;
+            max-width: 900px; /* Increased width for iPad/Desktop */
             border-radius: 24px;
             padding: 32px;
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
             border: 1px solid rgba(255, 255, 255, 0.5);
+            transition: max-width 0.3s ease;
+        }
+
+        /* Constrain Home/Input Views so they don't stretch too wide */
+        #view-home, #view-receive {
+            max-width: 400px;
+            margin: 0 auto;
         }
 
         /* STATUS BADGE */
@@ -76,7 +81,7 @@ export async function GET() {
         .status-badge.connected { background: rgba(16, 185, 129, 0.1); color: #047857; }
         .status-badge.error { background: rgba(239, 68, 68, 0.1); color: #b91c1c; }
 
-        /* ACTION BUTTONS (HOME) */
+        /* ACTION BUTTONS */
         .action-btn {
             width: 100%;
             background: white;
@@ -90,9 +95,6 @@ export async function GET() {
             cursor: pointer;
             transition: background 0.2s ease;
             box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-            /* Force visibility */
-            visibility: visible;
-            opacity: 1;
         }
         .action-btn:active { transform: scale(0.98); background: #f8fafc; }
         
@@ -142,13 +144,43 @@ export async function GET() {
         }
         .primary-btn:active { background: #2563eb; }
 
-        /* FILE LIST */
+        /* FILE LIST GRID SYSTEM */
+        #file-list {
+            display: flex;
+            flex-wrap: wrap;
+            margin: 20px -8px 0 -8px; /* Negative margin for gutter */
+            align-items: flex-start;
+        }
+
         .file-item {
             background: rgba(16, 185, 129, 0.1);
             border: 1px solid rgba(16, 185, 129, 0.2);
             border-radius: 12px;
             padding: 12px 16px;
-            margin-bottom: 8px;
+            margin: 0 8px 16px 8px; /* Gutter */
+            width: 100%; /* Default Mobile: 1 Column */
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.2s ease;
+        }
+
+        /* TABLET/IPAD SUPPORT (2 Columns) */
+        @media (min-width: 640px) {
+            .file-item {
+                width: calc(50% - 16px); /* 2 Columns */
+            }
+        }
+
+        .file-item button {
+            background: #10b981;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
         }
 
         .debug-log { 
@@ -158,7 +190,7 @@ export async function GET() {
             font-family: monospace; 
             font-size: 10px; 
             color: #94a3b8; 
-            text-align: left;
+            text-align: left; 
             max-height: 100px;
             overflow-y: auto;
         }
@@ -233,7 +265,7 @@ export async function GET() {
             <div id="room-display" style="font-family:monospace; font-size:32px; font-weight:700; color:#1e293b; margin:4px 0 20px 0;"></div>
         </div>
         
-        <div id="file-list" style="margin-top:20px;"></div>
+        <div id="file-list"></div>
         
         <button id="download-all-btn" class="primary-btn mt-4 hidden" onclick="downloadAllFiles()">Download All</button>
         
@@ -306,7 +338,7 @@ export async function GET() {
         auth.onAuthStateChanged(u => {
             if(u) {
                 setStatus('Ready');
-                show('view-home'); // Use helper function to ensure cleaner class toggling
+                show('view-home');
                 log("Auth: "+u.uid.slice(0,4));
             }
         });
