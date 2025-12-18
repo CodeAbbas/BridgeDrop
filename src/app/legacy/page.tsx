@@ -1,24 +1,51 @@
 import React from 'react';
-import { Metadata } from 'next';
+import { Metadata, Viewport } from 'next';
 
+// 1. Force Dynamic Rendering (Critical for Env Vars & No Caching issues)
 export const dynamic = 'force-dynamic';
 
+// 2. Metadata & Viewport for iOS 12 Optimization
 export const metadata: Metadata = {
   title: 'BridgeDrop Legacy',
-  viewport: 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no',
+  description: 'Legacy P2P File Transfer for iOS 12+',
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function LegacyPage() {
+  // 3. Server-Side Configuration (Securely injects into Client Script)
+  const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+  const authDomain = process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
+  const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+  const storageBucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET;
+  const messagingSenderId = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
+  const appId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID;
+
+  if (!apiKey || !projectId) {
+    return (
+      <div style={{ padding: 20, fontFamily: 'system-ui, sans-serif', textAlign: 'center' }}>
+        <h1>Config Error</h1>
+        <p>Missing API Keys in Environment Variables.</p>
+      </div>
+    );
+  }
+
   const firebaseConfig = {
-    apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-    authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-    storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+    apiKey,
+    authDomain,
+    projectId,
+    storageBucket,
+    messagingSenderId,
+    appId
   };
 
-  const cssContent = `
+  // 4. Styles (Ported exactly from route.ts)
+  const styles = `
     /* RESET & BASE */
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body { 
@@ -40,7 +67,7 @@ export default function LegacyPage() {
     .mb-4 { margin-bottom: 16px; }
     .mt-4 { margin-top: 16px; }
 
-    /* CARD */
+    /* CARD - Responsive Width (Up to 900px for iPad) */
     .card { 
         background: rgba(255, 255, 255, 0.95);
         width: 100%;
@@ -52,6 +79,7 @@ export default function LegacyPage() {
         transition: max-width 0.3s ease;
     }
 
+    /* Constrain Home/Input Views so they don't stretch too wide */
     #view-home, #view-receive { max-width: 400px; margin: 0 auto; }
 
     /* STATUS BADGE */
@@ -68,7 +96,6 @@ export default function LegacyPage() {
         letter-spacing: 0.05em;
         margin-bottom: 24px;
     }
-    .status-badge svg { margin-right: 6px; width: 14px; height: 14px; }
     .status-badge.connected { background: rgba(16, 185, 129, 0.1); color: #047857; }
     .status-badge.error { background: rgba(239, 68, 68, 0.1); color: #b91c1c; }
 
@@ -171,92 +198,8 @@ export default function LegacyPage() {
     }
   `;
 
-  // HTML Content: Note we keep the 'onclick' attributes which bind to global scope functions defined in the script below
-  const htmlContent = `
-    <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-            <div style="display:flex; align-items:center;">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:8px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
-                <span style="font-weight:600; font-size:18px;">BridgeDrop</span>
-            </div>
-            <button onclick="window.location.reload()" style="background:transparent; border:none; padding:8px; width:auto; cursor:pointer;">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-            </button>
-        </div>
-
-        <div class="text-center">
-            <div id="status-badge" class="status-badge">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-                <span id="status">Connecting...</span>
-            </div>
-        </div>
-
-        <div id="view-home" class="hidden">
-            <div class="text-center mb-4">
-                <h1 style="font-size:28px; font-weight:800; color:#1e293b; margin:0;">Legacy Mode</h1>
-                <p style="margin-top:4px;">Compatible with iOS 12+</p>
-            </div>
-
-            <div class="action-btn" onclick="startSend()">
-                <div style="display:flex; align-items:center;">
-                    <div class="icon-box blue">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-                    </div>
-                    <div class="btn-text">
-                        <span class="btn-title">Send</span>
-                        <span class="btn-subtitle">Create Room</span>
-                    </div>
-                </div>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-            </div>
-
-            <div class="action-btn" onclick="startReceive()">
-                <div style="display:flex; align-items:center;">
-                    <div class="icon-box green">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-                    </div>
-                    <div class="btn-text">
-                        <span class="btn-title">Receive</span>
-                        <span class="btn-subtitle">Enter Code</span>
-                    </div>
-                </div>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-            </div>
-        </div>
-
-        <div id="view-receive" class="hidden text-center">
-            <h2 style="color:#334155; margin-bottom:8px;">Enter Room Code</h2>
-            <input type="text" id="code-input" class="code-input" maxlength="6" placeholder="XXXXXX">
-            <button class="primary-btn" onclick="joinRoom()">Connect</button>
-            <button onclick="show('view-home')" style="background:none; border:none; color:#64748b; margin-top:16px; font-size:14px; text-decoration:underline; cursor:pointer;">Cancel</button>
-        </div>
-
-        <div id="view-transfer" class="hidden">
-            <div class="text-center">
-                <span style="font-size:10px; color:#94a3b8; font-weight:700; text-transform:uppercase; letter-spacing:1px;">Room ID</span>
-                <div id="room-display" style="font-family:monospace; font-size:32px; font-weight:700; color:#1e293b; margin:4px 0 20px 0;"></div>
-            </div>
-            
-            <div id="file-list"></div>
-            
-            <button id="download-all-btn" class="primary-btn mt-4 hidden" onclick="downloadAllFiles()">Download All</button>
-            
-            <button id="clear-btn" class="hidden" onclick="clearFiles()" style="width:100%; padding:12px; background:#f1f5f9; color:#475569; border:none; border-radius:12px; font-weight:700; margin-top:12px; cursor:pointer;">
-                Clear List
-            </button>
-            
-            <div id="sender-area" class="hidden mt-4">
-                <label style="display:block; border:2px dashed #cbd5e1; border-radius:16px; padding:32px 16px; text-align:center; cursor:pointer; background:#f8fafc;">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:8px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    <span style="display:block; font-weight:600; color:#334155;">Tap to Send Files</span>
-                    <input type="file" id="file-input" multiple style="display:none;" onchange="sendFiles()">
-                </label>
-            </div>
-        </div>
-    </div>
-  `;
-
-  const scriptContent = `
+  // 5. Logic (Ported exactly, injected securely)
+  const scriptLogic = `
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
     function log(m) { console.log(m); }
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
@@ -274,6 +217,8 @@ export default function LegacyPage() {
     function setStatus(state) {
         const el = document.getElementById('status-badge');
         const txt = document.getElementById('status');
+        if(!el || !txt) return;
+        
         el.className = 'status-badge';
         
         if (isConnected && (state !== 'error' && state !== 'Expired')) return;
@@ -313,44 +258,54 @@ export default function LegacyPage() {
         document.getElementById('clear-btn').style.display = 'none';
     }
 
-    try {
-        firebase.initializeApp(firebaseConfig);
-        db = firebase.firestore();
-        auth = firebase.auth();
-        auth.setPersistence(firebase.auth.Auth.Persistence.NONE)
-            .then(() => auth.signInAnonymously())
-            .catch(e => log("Auth Error: "+e.message));
-        auth.onAuthStateChanged(u => {
-            if(u) {
-                setStatus('Ready');
-                show('view-home');
-                log("Auth: "+u.uid.slice(0,4));
+    // Initialize Firebase
+    if (typeof firebase !== 'undefined') {
+        try {
+            if (!firebase.apps.length) {
+                firebase.initializeApp(firebaseConfig);
             }
-        });
-    } catch(e) { log("Init Err: "+e.message); }
+            db = firebase.firestore();
+            auth = firebase.auth();
+            auth.setPersistence(firebase.auth.Auth.Persistence.NONE)
+                .then(() => auth.signInAnonymously())
+                .catch(e => log("Auth Error: "+e.message));
+            auth.onAuthStateChanged(u => {
+                if(u) {
+                    setStatus('Ready');
+                    show('view-home');
+                    log("Auth: "+u.uid.slice(0,4));
+                }
+            });
+        } catch(e) { log("Init Err: "+e.message); }
+    }
 
     function show(id) {
         ['view-home','view-receive','view-transfer'].forEach(v => {
-            document.getElementById(v).style.display = 'none';
+            const el = document.getElementById(v);
+            if(el) el.style.display = 'none';
         });
-        document.getElementById(id).style.display = 'block';
+        const target = document.getElementById(id);
+        if(target) target.style.display = 'block';
     }
     
-    function startReceive() { show('view-receive'); }
-    function startSend() {
+    // Expose functions to global scope for HTML buttons
+    window.startReceive = function() { show('view-receive'); }
+    window.startSend = function() {
         roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
         setupPeer(true);
         show('view-transfer');
         document.getElementById('room-display').innerText = roomId;
         document.getElementById('sender-area').style.display = 'block';
     }
-    function joinRoom() {
+    window.joinRoom = function() {
         roomId = document.getElementById('code-input').value.toUpperCase();
         if(roomId.length!==6) return;
         setupPeer(false);
         show('view-transfer');
         document.getElementById('room-display').innerText = roomId;
     }
+    window.downloadAllFiles = downloadAllFiles;
+    window.clearFiles = clearFiles;
 
     function setupPeer(isInit) {
         if(peerConnection) {
@@ -365,6 +320,7 @@ export default function LegacyPage() {
             if(e.candidate) db.collection('rooms').doc(roomId).collection(isInit?'callerCandidates':'calleeCandidates').add(e.candidate.toJSON());
         };
 
+        // RELAXED LISTENERS
         peerConnection.oniceconnectionstatechange = () => {
             if(peerConnection.iceConnectionState === 'failed') setStatus('error');
         };
@@ -483,8 +439,9 @@ export default function LegacyPage() {
     }
 
     async function sendFiles() {
-        const files = document.getElementById('file-input').files;
-        if(!files.length || !dataChannel) return;
+        const input = document.getElementById('file-input');
+        if(!input || !input.files.length || !dataChannel) return;
+        const files = input.files;
 
         for (let i = 0; i < files.length; i++) {
             const f = files[i];
@@ -515,17 +472,99 @@ export default function LegacyPage() {
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: cssContent }} />
-      {/* Firebase Compat Scripts */}
-      <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js" defer></script>
-      <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js" defer></script>
-      <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js" defer></script>
+      {/* 6. Raw Styles and Scripts injection */}
+      <style dangerouslySetInnerHTML={{ __html: styles }} />
+      
+      {/* External Firebase SDKs (Synchronous-like loading for Legacy) */}
+      <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+      <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
+      <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
 
-      {/* Main UI Container */}
-      <div dangerouslySetInnerHTML={{ __html: htmlContent }} />
+      {/* 7. HTML Structure (No <html> or <body> tags, handled by Layout) */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '8px' }}><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline points="16 6 12 2 8 6" /><line x1="12" y1="2" x2="12" y2="15" /></svg>
+                <span style={{ fontWeight: 600, fontSize: '18px' }}>BridgeDrop</span>
+            </div>
+            <button onClick={() => typeof window !== 'undefined' && window.location.reload()} style={{ background: 'transparent', border: 'none', padding: '8px', width: 'auto', cursor: 'pointer' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
+            </button>
+        </div>
 
-      {/* Logic Script */}
-      <script dangerouslySetInnerHTML={{ __html: scriptContent }} />
+        <div className="text-center">
+            <div id="status-badge" className="status-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
+                <span id="status">Connecting...</span>
+            </div>
+        </div>
+
+        <div id="view-home" className="hidden">
+            <div className="text-center mb-4">
+                <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#1e293b', margin: 0 }}>Legacy Mode</h1>
+                <p style={{ marginTop: '4px' }}>Compatible with iOS 12+</p>
+            </div>
+
+            <div className="action-btn" onClick={() => (window as any).startSend()}>
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <div className="icon-box blue">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg>
+                    </div>
+                    <div className="btn-text">
+                        <span className="btn-title">Send</span>
+                        <span className="btn-subtitle">Create Room</span>
+                    </div>
+                </div>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
+            </div>
+
+            <div className="action-btn" onClick={() => (window as any).startReceive()}>
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <div className="icon-box green">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg>
+                    </div>
+                    <div className="btn-text">
+                        <span className="btn-title">Receive</span>
+                        <span className="btn-subtitle">Enter Code</span>
+                    </div>
+                </div>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
+            </div>
+        </div>
+
+        <div id="view-receive" className="hidden text-center">
+            <h2 style={{ color: '#334155', marginBottom: '8px' }}>Enter Room Code</h2>
+            <input type="text" id="code-input" className="code-input" maxLength={6} placeholder="XXXXXX" />
+            <button className="primary-btn" onClick={() => (window as any).joinRoom()}>Connect</button>
+            <button onClick={() => (window as any).show('view-home')} style={{ background: 'none', border: 'none', color: '#64748b', marginTop: '16px', fontSize: '14px', textDecoration: 'underline', cursor: 'pointer' }}>Cancel</button>
+        </div>
+
+        <div id="view-transfer" className="hidden">
+            <div className="text-center">
+                <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>Room ID</span>
+                <div id="room-display" style={{ fontFamily: 'monospace', fontSize: '32px', fontWeight: 700, color: '#1e293b', margin: '4px 0 20px 0' }}></div>
+            </div>
+            
+            <div id="file-list"></div>
+            
+            <button id="download-all-btn" className="primary-btn mt-4 hidden" onClick={() => (window as any).downloadAllFiles()}>Download All</button>
+            
+            <button id="clear-btn" className="hidden" onClick={() => (window as any).clearFiles()} style={{ width: '100%', padding: '12px', background: '#f1f5f9', color: '#475569', border: 'none', borderRadius: '12px', fontWeight: 700, marginTop: '12px', cursor: 'pointer' }}>
+                Clear List
+            </button>
+            
+            <div id="sender-area" className="hidden mt-4">
+                <label style={{ display: 'block', border: '2px dashed #cbd5e1', borderRadius: '16px', padding: '32px 16px', textAlign: 'center', cursor: 'pointer', background: '#f8fafc' }}>
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '8px', display: 'inline-block' }}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                    <span style={{ display: 'block', fontWeight: 600, color: '#334155' }}>Tap to Send Files</span>
+                    <input type="file" id="file-input" multiple style={{ display: 'none' }} onChange={() => (window as any).sendFiles()} />
+                </label>
+            </div>
+        </div>
+      </div>
+
+      {/* 8. Logic Script */}
+      <script dangerouslySetInnerHTML={{ __html: scriptLogic }} />
     </>
   );
 }
