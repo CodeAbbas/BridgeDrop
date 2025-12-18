@@ -2,14 +2,14 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  collection, doc, setDoc, onSnapshot, addDoc, updateDoc, getDoc 
+  collection, doc, setDoc, onSnapshot, addDoc, updateDoc
 } from 'firebase/firestore';
 import { 
   signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 import { db, auth } from '@/lib/firebase';
 import { 
-  Wifi, Smartphone, Tablet, Send, Check, Loader2, Share2, 
+  Wifi, Smartphone, Tablet, Check, Loader2, Share2, 
   ArrowRight, X, Copy, Files, RefreshCw
 } from 'lucide-react';
 
@@ -37,9 +37,13 @@ export default function BridgeDrop() {
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const dataChannel = useRef<RTCDataChannel | null>(null);
   
+  // Receiver Refs
   const incomingFileMeta = useRef<any>(null);
   const incomingFileChunks = useRef<any[]>([]);
   const incomingFileSize = useRef(0);
+  const fileStreamWriter = useRef<any>(null); // For File System Access API
+  const receiveBuffer = useRef<any[]>([]); // To queue chunks while waiting for user interaction
+  const receiveState = useRef<'idle' | 'pending' | 'disk' | 'memory'>('idle');
 
   useEffect(() => {
     const initAuth = async () => {
@@ -142,31 +146,105 @@ export default function BridgeDrop() {
     if (!dataChannel.current) return;
     dataChannel.current.onopen = () => setStatus('connected');
     
-    dataChannel.current.onmessage = (e) => {
+    dataChannel.current.onmessage = async (e) => {
       const data = e.data;
+      
+      // 1. Handle JSON Metadata
       if (typeof data === 'string') {
         try {
           const msg = JSON.parse(data);
+          
           if (msg.type === 'meta') {
             incomingFileMeta.current = msg;
             incomingFileChunks.current = [];
             incomingFileSize.current = 0;
+            receiveBuffer.current = [];
             setStatus('transferring');
             setCurrentFileIndex(prev => prev + 1); 
+
+            // Initialize Stream Strategy
+            receiveState.current = 'pending';
+            
+            // Attempt to use File System Access API if available
+            if ('showSaveFilePicker' in window) {
+              try {
+                // Note: This might throw/fail if user gesture is not active/fresh
+                // We wrap it to ensure fallback works.
+                const handle = await (window as any).showSaveFilePicker({
+                  suggestedName: msg.name,
+                });
+                const writable = await handle.createWritable();
+                fileStreamWriter.current = writable;
+                receiveState.current = 'disk';
+              } catch (err) {
+                console.warn("FSA API failed/cancelled, falling back to memory.", err);
+                receiveState.current = 'memory';
+              }
+            } else {
+              receiveState.current = 'memory';
+            }
+
+            // Flush any chunks that arrived while waiting for the picker
+            if (receiveBuffer.current.length > 0) {
+              for (const chunk of receiveBuffer.current) {
+                if (receiveState.current === 'disk' && fileStreamWriter.current) {
+                  await fileStreamWriter.current.write(chunk);
+                } else {
+                  incomingFileChunks.current.push(chunk);
+                }
+              }
+              receiveBuffer.current = [];
+            }
+
           } else if (msg.type === 'end') {
-            const blob = new Blob(incomingFileChunks.current, { type: incomingFileMeta.current.mime });
-            const url = URL.createObjectURL(blob);
-            setFileQueue(prev => [...prev, { name: incomingFileMeta.current.name, url: url }]);
+            // Finalize File
+            let finalUrl = null;
+
+            if (receiveState.current === 'disk' && fileStreamWriter.current) {
+              await fileStreamWriter.current.close();
+              fileStreamWriter.current = null;
+              finalUrl = null; // Saved directly to disk
+            } else {
+              // Memory Fallback Finalization
+              // Flush any pending buffer if state got stuck (rare)
+              if (receiveBuffer.current.length > 0) {
+                  incomingFileChunks.current.push(...receiveBuffer.current);
+                  receiveBuffer.current = [];
+              }
+              const blob = new Blob(incomingFileChunks.current, { type: incomingFileMeta.current.mime });
+              finalUrl = URL.createObjectURL(blob);
+            }
+
+            setFileQueue(prev => [...prev, { 
+              name: incomingFileMeta.current.name, 
+              url: finalUrl,
+              savedToDisk: receiveState.current === 'disk'
+            }]);
+            
             setStatus('file_received'); 
+            receiveState.current = 'idle';
             setTimeout(() => setStatus('connected'), 1000);
           }
-        } catch(e) { console.log(e); }
+        } catch(e) { console.error("Msg Error", e); }
+        
       } else {
-        incomingFileChunks.current.push(data);
+        // 2. Handle Binary Chunks
         incomingFileSize.current += data.byteLength;
+        
+        // Calculate Progress
         if (incomingFileMeta.current) {
            const pct = Math.min(100, Math.round((incomingFileSize.current / incomingFileMeta.current.size) * 100));
            setProgress(pct);
+        }
+
+        // Route Data based on State
+        if (receiveState.current === 'pending') {
+          receiveBuffer.current.push(data);
+        } else if (receiveState.current === 'disk' && fileStreamWriter.current) {
+          await fileStreamWriter.current.write(data);
+        } else {
+          // Fallback to memory array
+          incomingFileChunks.current.push(data);
         }
       }
     };
@@ -177,6 +255,9 @@ export default function BridgeDrop() {
     setTotalFiles(files.length);
     setCurrentFileIndex(0);
 
+    // Optimize Throughput: Set Low Buffer Threshold (64KB)
+    dataChannel.current.bufferedAmountLowThreshold = 65536;
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       setCurrentFileIndex(i + 1);
@@ -185,25 +266,42 @@ export default function BridgeDrop() {
 
       dataChannel.current.send(JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type }));
       
-      const CHUNK = 16 * 1024;
-      const buf = await file.arrayBuffer();
+      // Use Streams for efficient reading
+      const stream = file.stream();
+      const reader = stream.getReader();
       let offset = 0;
-      while (offset < buf.byteLength) {
-        const chunk = buf.slice(offset, offset + CHUNK);
-        while (dataChannel.current.bufferedAmount > 65536 * 2) await new Promise(r => setTimeout(r, 10));
-        dataChannel.current.send(chunk);
-        offset += chunk.byteLength;
-        setProgress(Math.min(100, Math.round((offset / buf.byteLength) * 100)));
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Reliable Backpressure Logic
+        if (dataChannel.current.bufferedAmount > dataChannel.current.bufferedAmountLowThreshold) {
+           await new Promise<void>(resolve => {
+              const handler = () => {
+                 dataChannel.current?.removeEventListener('bufferedamountlow', handler);
+                 resolve();
+              };
+              dataChannel.current?.addEventListener('bufferedamountlow', handler);
+           });
+        }
+
+        dataChannel.current.send(value);
+        
+        offset += value.byteLength;
+        setProgress(Math.min(100, Math.round((offset / file.size) * 100)));
       }
+
       dataChannel.current.send(JSON.stringify({ type: 'end' }));
-      await new Promise(r => setTimeout(r, 500));
+      // Brief pause to ensure 'end' message order/processing
+      await new Promise(r => setTimeout(r, 100));
     }
     setStatus('completed');
   };
 
   const clearQueue = () => {
     setFileQueue([]);
-    setStatus('connected'); // Reset status but keep connection
+    setStatus('connected'); 
   };
 
   const reset = () => {
@@ -406,17 +504,20 @@ export default function BridgeDrop() {
                                   </div>
                                   <span className="text-xs text-emerald-900 font-medium truncate max-w-[150px]">{file.name}</span>
                                 </div>
-                                <a 
-                                  href={file.url}
-                                  download={file.name} 
-                                  className="bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg hover:bg-emerald-600 transition-colors"
-                                >
-                                  Save
-                                </a>
+                                {file.savedToDisk ? (
+                                    <span className="text-xs text-emerald-600 font-bold italic">Saved to Disk</span>
+                                ) : (
+                                    <a 
+                                      href={file.url}
+                                      download={file.name} 
+                                      className="bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg hover:bg-emerald-600 transition-colors"
+                                    >
+                                      Save
+                                    </a>
+                                )}
                               </div>
                             ))}
                             
-                            {/* CLEAR BUTTON */}
                             <button 
                               onClick={clearQueue}
                               className="w-full mt-4 flex items-center justify-center gap-2 bg-slate-100 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-200 transition-colors"
