@@ -45,7 +45,7 @@ export async function GET() {
         .mb-4 { margin-bottom: 16px; }
         .mt-4 { margin-top: 16px; }
 
-        /* CARD - Responsive Width (Up to 900px for iPad) */
+        /* CARD */
         .card { 
             background: rgba(255, 255, 255, 0.95);
             width: 100%;
@@ -57,7 +57,6 @@ export async function GET() {
             transition: max-width 0.3s ease;
         }
 
-        /* Constrain Home/Input Views so they don't stretch too wide */
         #view-home, #view-receive { max-width: 400px; margin: 0 auto; }
 
         /* STATUS BADGE */
@@ -161,7 +160,6 @@ export async function GET() {
             flex-direction: column;
         }
 
-        /* TABLET/DESKTOP (2 Columns) */
         @media (min-width: 640px) {
             .file-item { width: calc(50% - 16px); }
         }
@@ -267,9 +265,11 @@ export async function GET() {
 
 <script>
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
-    function log(m) { console.log(m); /* Debug logs hidden */ }
+    function log(m) { console.log(m); }
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
     let receivedFiles = []; 
+    let isConnected = false; // Flag to prevent flickering
+
     const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }] };
     const ROOM_TTL = 24 * 60 * 60 * 1000;
 
@@ -282,9 +282,23 @@ export async function GET() {
         const el = document.getElementById('status-badge');
         const txt = document.getElementById('status');
         el.className = 'status-badge';
-        if(state === 'connected') { el.classList.add('connected'); txt.innerText = "Connected"; }
-        else if(state === 'error') { el.classList.add('error'); txt.innerText = "Error"; }
-        else { txt.innerText = state; }
+        
+        // If we are already connected, ignore "connecting" or "disconnected" noise
+        if (isConnected && (state !== 'error' && state !== 'Expired')) return;
+
+        if(state === 'connected') { 
+            el.classList.add('connected'); 
+            txt.innerText = "Connected"; 
+            isConnected = true;
+        }
+        else if(state === 'error') { 
+            el.classList.add('error'); 
+            txt.innerText = "Error"; 
+            isConnected = false;
+        }
+        else { 
+            txt.innerText = state; 
+        }
     }
 
     function downloadAllFiles() {
@@ -347,11 +361,10 @@ export async function GET() {
     }
 
     function setupPeer(isInit) {
-        // Robustness: Close existing peer if any to prevent state conflicts
         if(peerConnection) {
             try { peerConnection.close(); } catch(e) {}
         }
-
+        isConnected = false; // Reset flag on new peer
         log("Peer Init...");
         setStatus('Connecting...');
         peerConnection = new RTCPeerConnection(rtcConfig);
@@ -360,25 +373,17 @@ export async function GET() {
             if(e.candidate) db.collection('rooms').doc(roomId).collection(isInit?'callerCandidates':'calleeCandidates').add(e.candidate.toJSON());
         };
 
-        // Legacy Support: Important for iOS 12/13
+        // RELAXED LISTENERS: Only care about explicit failures
         peerConnection.oniceconnectionstatechange = () => {
-            const state = peerConnection.iceConnectionState;
-            log("ICE: " + state);
-            if(state === 'connected' || state === 'completed') setStatus('connected');
-            if(state === 'failed' || state === 'disconnected') setStatus('error');
+            if(peerConnection.iceConnectionState === 'failed') setStatus('error');
         };
-
-        // Modern Support
         peerConnection.onconnectionstatechange = () => {
-            const state = peerConnection.connectionState;
-            log("State: " + state);
-            if(state === 'connected') setStatus('connected');
-            else if(state === 'failed') setStatus('error');
+             if(peerConnection.connectionState === 'failed') setStatus('error');
         };
 
         if(isInit) {
             dataChannel = peerConnection.createDataChannel("file");
-            setupData();
+            setupData(); // This handles the "Connected" state now
             peerConnection.createOffer().then(o => peerConnection.setLocalDescription(o)).then(() => {
                 db.collection('rooms').doc(roomId).set({
                     offer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp},
@@ -420,7 +425,12 @@ export async function GET() {
     }
 
     function setupData() {
-        dataChannel.onopen = () => { setStatus('connected'); log("P2P Open"); };
+        // THIS is the only thing that triggers "Connected" now = FAST
+        dataChannel.onopen = () => { 
+            setStatus('connected'); 
+            log("P2P Open"); 
+        };
+        
         dataChannel.onmessage = e => {
             const d = e.data;
             if(typeof d === 'string') {
