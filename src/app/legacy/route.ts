@@ -31,7 +31,7 @@ export async function GET() {
             background-color: #f8fafc;
             color: #1e293b;
             margin: 0;
-            padding: 20px; /* Safe padding for x-axis */
+            padding: 20px;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -45,11 +45,11 @@ export async function GET() {
         .mb-4 { margin-bottom: 16px; }
         .mt-4 { margin-top: 16px; }
 
-        /* CARD - Responsive Width */
+        /* CARD - Responsive Width (Up to 900px for iPad) */
         .card { 
             background: rgba(255, 255, 255, 0.95);
             width: 100%;
-            max-width: 900px; /* Increased width for iPad/Desktop */
+            max-width: 900px;
             border-radius: 24px;
             padding: 32px;
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
@@ -58,10 +58,7 @@ export async function GET() {
         }
 
         /* Constrain Home/Input Views so they don't stretch too wide */
-        #view-home, #view-receive {
-            max-width: 400px;
-            margin: 0 auto;
-        }
+        #view-home, #view-receive { max-width: 400px; margin: 0 auto; }
 
         /* STATUS BADGE */
         .status-badge {
@@ -144,11 +141,11 @@ export async function GET() {
         }
         .primary-btn:active { background: #2563eb; }
 
-        /* FILE LIST GRID SYSTEM */
+        /* FILE LIST GRID */
         #file-list {
             display: flex;
             flex-wrap: wrap;
-            margin: 20px -8px 0 -8px; /* Negative margin for gutter */
+            margin: 20px -8px 0 -8px;
             align-items: flex-start;
         }
 
@@ -157,19 +154,16 @@ export async function GET() {
             border: 1px solid rgba(16, 185, 129, 0.2);
             border-radius: 12px;
             padding: 12px 16px;
-            margin: 0 8px 16px 8px; /* Gutter */
-            width: 100%; /* Default Mobile: 1 Column */
+            margin: 0 8px 16px 8px;
+            width: 100%;
             box-sizing: border-box;
             display: flex;
             flex-direction: column;
-            transition: all 0.2s ease;
         }
 
-        /* TABLET/IPAD SUPPORT (2 Columns) */
+        /* TABLET/DESKTOP (2 Columns) */
         @media (min-width: 640px) {
-            .file-item {
-                width: calc(50% - 16px); /* 2 Columns */
-            }
+            .file-item { width: calc(50% - 16px); }
         }
 
         .file-item button {
@@ -181,18 +175,6 @@ export async function GET() {
             font-size: 12px;
             font-weight: 700;
             cursor: pointer;
-        }
-
-        .debug-log { 
-            margin-top: 24px; 
-            padding-top: 12px; 
-            border-top: 1px solid #f1f5f9; 
-            font-family: monospace; 
-            font-size: 10px; 
-            color: #94a3b8; 
-            text-align: left; 
-            max-height: 100px;
-            overflow-y: auto;
         }
     </style>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
@@ -281,13 +263,11 @@ export async function GET() {
             </label>
         </div>
     </div>
-
-    <div id="debug" class="debug-log"></div>
 </div>
 
 <script>
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
-    function log(m) { console.log(m); document.getElementById('debug').innerHTML += "<div>"+m+"</div>"; }
+    function log(m) { console.log(m); /* Debug logs hidden */ }
     let db, auth, peerConnection, dataChannel, roomId, fileChunks=[], fileMeta=null;
     let receivedFiles = []; 
     const rtcConfig = { iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }] };
@@ -325,7 +305,6 @@ export async function GET() {
         receivedFiles = [];
         document.getElementById('download-all-btn').style.display = 'none';
         document.getElementById('clear-btn').style.display = 'none';
-        log("Cleared.");
     }
 
     try {
@@ -368,16 +347,33 @@ export async function GET() {
     }
 
     function setupPeer(isInit) {
+        // Robustness: Close existing peer if any to prevent state conflicts
+        if(peerConnection) {
+            try { peerConnection.close(); } catch(e) {}
+        }
+
         log("Peer Init...");
         setStatus('Connecting...');
         peerConnection = new RTCPeerConnection(rtcConfig);
+        
         peerConnection.onicecandidate = e => {
             if(e.candidate) db.collection('rooms').doc(roomId).collection(isInit?'callerCandidates':'calleeCandidates').add(e.candidate.toJSON());
         };
+
+        // Legacy Support: Important for iOS 12/13
+        peerConnection.oniceconnectionstatechange = () => {
+            const state = peerConnection.iceConnectionState;
+            log("ICE: " + state);
+            if(state === 'connected' || state === 'completed') setStatus('connected');
+            if(state === 'failed' || state === 'disconnected') setStatus('error');
+        };
+
+        // Modern Support
         peerConnection.onconnectionstatechange = () => {
-            if(peerConnection.connectionState === 'connected') setStatus('connected');
-            else if(peerConnection.connectionState === 'failed') setStatus('error');
-            else setStatus(peerConnection.connectionState);
+            const state = peerConnection.connectionState;
+            log("State: " + state);
+            if(state === 'connected') setStatus('connected');
+            else if(state === 'failed') setStatus('error');
         };
 
         if(isInit) {
@@ -400,7 +396,7 @@ export async function GET() {
                 if(s.exists) {
                     const d = s.data();
                     if (d.createdAt && (Date.now() - d.createdAt > ROOM_TTL)) {
-                        setStatus('error');
+                        setStatus('Expired');
                         return;
                     }
                     if (!peerConnection.currentRemoteDescription && d.offer) {
@@ -410,6 +406,8 @@ export async function GET() {
                             .then(() => db.collection('rooms').doc(roomId).update({answer:{type:peerConnection.localDescription.type, sdp:peerConnection.localDescription.sdp}}));
                         listenCandidates('callerCandidates');
                     }
+                } else {
+                    setStatus('Invalid Code');
                 }
             });
         }
@@ -437,12 +435,10 @@ export async function GET() {
                     if (receivedFiles.length > 1) document.getElementById('download-all-btn').style.display = 'block';
                     document.getElementById('clear-btn').style.display = 'block';
 
-                    /* --- LEGACY IMAGE FIX: BASE64 RENDER --- */
                     const div = document.createElement('div');
                     div.className = 'file-item';
                     const isImage = fileMeta.mime.startsWith('image/');
 
-                    // 1. Create Header Row (Name + Button)
                     const headerDiv = document.createElement('div');
                     headerDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; width:100%;";
 
@@ -458,37 +454,29 @@ export async function GET() {
                     headerDiv.appendChild(btn);
                     div.appendChild(headerDiv);
 
-                    // 2. If Image: Convert Blob to Base64 and Append
                     if (isImage) {
-                        div.style.flexDirection = 'column'; // Stack vertically
+                        div.style.flexDirection = 'column'; 
                         
                         const imgContainer = document.createElement('div');
                         imgContainer.style.cssText = "margin-top:12px; text-align:center; width:100%; min-height:50px;";
                         imgContainer.innerText = "Loading preview...";
                         div.appendChild(imgContainer);
 
-                        // Use FileReader to get Base64 Data URL (Bypasses blob: network check on iOS)
                         const reader = new FileReader();
                         reader.onload = function(e) {
                             imgContainer.innerText = "";
-                            
                             const img = document.createElement('img');
                             img.src = e.target.result; 
                             img.style.cssText = "max-width:100%; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); display:block; margin:0 auto;";
-                            
                             const hint = document.createElement('p');
                             hint.style.cssText = "font-size:11px; color:#64748b; margin-top:8px; font-weight:500;";
                             hint.innerText = "Long press image to Save to Photos";
-
                             imgContainer.appendChild(img);
                             imgContainer.appendChild(hint);
                         };
                         reader.readAsDataURL(blob);
                     }
-                    /* --- END FIX --- */
-                    
                     document.getElementById('file-list').appendChild(div);
-                    log("Done: " + fileMeta.name);
                 }
             } else fileChunks.push(d);
         };
@@ -515,7 +503,6 @@ export async function GET() {
                         readSlice(offset);
                     } else {
                         dataChannel.send(JSON.stringify({type:'end'}));
-                        log("Sent: " + f.name);
                         setTimeout(resolve, 500); 
                     }
                 };
