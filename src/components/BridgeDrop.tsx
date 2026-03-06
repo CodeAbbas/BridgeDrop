@@ -19,11 +19,11 @@ const rtcConfig = {
 
 const ROOM_TTL = 24 * 60 * 60 * 1000;
 
-
 interface QueuedFile {
   name: string;
   url: string | null;
   savedToDisk?: boolean;
+  mime?: string; 
 }
 
 interface FileMeta {
@@ -45,6 +45,8 @@ export default function BridgeDrop() {
   const [progress, setProgress] = useState(0);
   
   const [fileQueue, setFileQueue] = useState<QueuedFile[]>([]);
+  const [sentFiles, setSentFiles] = useState<QueuedFile[]>([]);
+  
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
   const [totalFiles, setTotalFiles] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -58,6 +60,9 @@ export default function BridgeDrop() {
   const fileStreamWriter = useRef<FileStreamWriter | null>(null); 
   const receiveBuffer = useRef<ArrayBuffer[]>([]); 
   const receiveState = useRef<'idle' | 'pending' | 'disk' | 'memory'>('idle');
+
+  // UI Helper to determine if we should expand the card
+  const hasFiles = (mode === 'sender' && sentFiles.length > 0) || (mode === 'receiver' && fileQueue.length > 0);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -124,7 +129,7 @@ export default function BridgeDrop() {
         setupDataListeners();
       };
 
-      const unsubscribe = onSnapshot(roomRef, async (snap) => {
+      onSnapshot(roomRef, async (snap) => {
         if (snap.exists()) {
           const data = snap.data();
           
@@ -132,7 +137,6 @@ export default function BridgeDrop() {
              setStatus('error');
              setErrorMsg("Room Expired");
              pc.close();
-             unsubscribe();
              return;
           }
 
@@ -226,7 +230,8 @@ export default function BridgeDrop() {
                 setFileQueue(prev => [...prev, { 
                   name: incomingFileMeta.current!.name, 
                   url: finalUrl,
-                  savedToDisk: receiveState.current === 'disk'
+                  savedToDisk: receiveState.current === 'disk',
+                  mime: incomingFileMeta.current!.mime 
                 }]);
             }
             
@@ -298,6 +303,10 @@ export default function BridgeDrop() {
         }
 
         dataChannel.current.send(JSON.stringify({ type: 'end' }));
+        
+        const fileUrl = URL.createObjectURL(file);
+        setSentFiles(prev => [...prev, { name: file.name, mime: file.type, url: fileUrl }]);
+
         await new Promise(r => setTimeout(r, 100)); 
       }
 
@@ -319,9 +328,16 @@ export default function BridgeDrop() {
     }
   };
 
-  const clearQueue = () => {
+  const clearReceiveQueue = () => {
+    fileQueue.forEach(f => f.url && URL.revokeObjectURL(f.url));
     setFileQueue([]);
     setStatus('connected'); 
+  };
+
+  const clearSentQueue = () => {
+    sentFiles.forEach(f => f.url && URL.revokeObjectURL(f.url));
+    setSentFiles([]);
+    setStatus('connected');
   };
 
   const reset = () => {
@@ -329,237 +345,322 @@ export default function BridgeDrop() {
     setRoomId('');
     setStatus('idle');
     setProgress(0);
+    
+    fileQueue.forEach(f => f.url && URL.revokeObjectURL(f.url));
     setFileQueue([]);
+    
+    sentFiles.forEach(f => f.url && URL.revokeObjectURL(f.url));
+    setSentFiles([]);
+    
     setTotalFiles(0);
     setCurrentFileIndex(0);
     setErrorMsg(null);
     peerConnection.current?.close();
   };
 
-  const blobStyle = "absolute rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob";
+  const blobStyle = "absolute rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob pointer-events-none";
 
   return (
-    <div className="min-h-screen relative overflow-hidden bg-slate-50 font-sans selection:bg-blue-500 selection:text-white">
-      <div className="absolute inset-0 w-full h-full overflow-hidden z-0 pointer-events-none">
+    <div className="min-h-screen relative overflow-hidden bg-slate-50 font-sans selection:bg-blue-500 selection:text-white flex items-center justify-center p-4">
+      {/* Ambient Background Blobs */}
+      <div className="absolute inset-0 w-full h-full overflow-hidden z-0">
          <div className={`top-0 -left-4 w-72 h-72 bg-purple-300 ${blobStyle}`}></div>
          <div className={`top-0 -right-4 w-72 h-72 bg-blue-300 ${blobStyle} delay-2000`}></div>
          <div className={`-bottom-8 left-20 w-72 h-72 bg-indigo-300 ${blobStyle} delay-4000`}></div>
       </div>
 
-      <div className="relative z-10 min-h-screen flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-white/40 backdrop-blur-2xl border border-white/50 shadow-2xl rounded-[2.5rem] p-8 overflow-hidden transition-all duration-500 max-h-[80vh] overflow-y-auto">
-          
-          <div className="flex items-center justify-between mb-8">
-            <div className="flex items-center space-x-3">
-              <div className="bg-white/50 p-2.5 rounded-full shadow-sm backdrop-blur-md">
-                <Share2 className="text-blue-600 w-5 h-5" />
-              </div>
-              <span className="font-semibold text-slate-800 tracking-tight text-lg">BridgeDrop</span>
+      {/* Main App Container */}
+      <div 
+        className={`relative z-10 w-full bg-white/40 backdrop-blur-2xl border border-white/50 shadow-2xl rounded-[2.5rem] p-6 lg:p-8 flex flex-col transition-all duration-700 ease-in-out max-h-[90vh] ${
+          hasFiles ? 'max-w-md lg:max-w-5xl' : 'max-w-md'
+        }`}
+      >
+        {/* Fixed Header */}
+        <div className="flex items-center justify-between mb-6 shrink-0">
+          <div className="flex items-center space-x-3">
+            <div className="bg-white/50 p-2.5 rounded-full shadow-sm backdrop-blur-md">
+              <Share2 className="text-blue-600 w-5 h-5" />
             </div>
-            {mode !== 'home' && (
-              <button onClick={reset} className="p-2 bg-white/30 hover:bg-white/50 rounded-full transition-colors">
-                <X className="w-5 h-5 text-slate-600" />
-              </button>
+            <span className="font-semibold text-slate-800 tracking-tight text-lg">BridgeDrop</span>
+          </div>
+          {mode !== 'home' && (
+            <button onClick={reset} className="p-2 bg-white/30 hover:bg-white/50 rounded-full transition-colors">
+              <X className="w-5 h-5 text-slate-600" />
+            </button>
+          )}
+        </div>
+
+        {/* Content Wrapper (Scrolls internally) */}
+        <div className={`flex flex-col ${hasFiles ? 'lg:flex-row lg:gap-8' : ''} flex-1 min-h-0`}>
+          
+          {/* LEFT COLUMN: Main Controls */}
+          <div className={`flex flex-col w-full ${hasFiles ? 'lg:w-[380px] lg:shrink-0' : ''} overflow-y-auto custom-scrollbar pb-2 pr-2`}>
+            
+            {!user ? (
+              <div className="h-48 flex flex-col items-center justify-center space-y-4">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600 opacity-80" />
+                <p className="text-sm font-medium text-slate-500">Secure Handshake...</p>
+              </div>
+            ) : (
+              <div className="animate-in fade-in duration-700 space-y-6">
+                
+                {mode === 'home' && (
+                  <div className="space-y-4 pt-2">
+                    <div className="text-center mb-8">
+                      <h1 className="text-3xl font-bold text-slate-800 tracking-tight mb-2">Liquid Share</h1>
+                      <p className="text-slate-500 font-medium">Seamless P2P Transfer</p>
+                    </div>
+
+                    <button 
+                      onClick={() => {
+                        const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+                        setRoomId(newCode); 
+                        setMode('sender');
+                        setupPeerConnection(true, newCode); 
+                      }}
+                      className="w-full bg-white/60 hover:bg-white/80 border border-white/60 rounded-[1.5rem] p-5 flex items-center justify-between group transition-all duration-300 shadow-sm hover:shadow-lg hover:scale-[1.02] active:scale-95"
+                    >
+                      <div className="flex items-center space-x-4">
+                        <div className="bg-blue-100/50 p-3 rounded-full">
+                          <Smartphone className="w-6 h-6 text-blue-600" />
+                        </div>
+                        <div className="text-left">
+                          <h3 className="font-bold text-slate-800">Send</h3>
+                          <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Create Room</p>
+                        </div>
+                      </div>
+                      <div className="w-8 h-8 rounded-full bg-white/50 flex items-center justify-center">
+                         <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" />
+                      </div>
+                    </button>
+
+                    <button 
+                      onClick={() => setMode('receiver_input')}
+                      className="w-full bg-white/60 hover:bg-white/80 border border-white/60 rounded-[1.5rem] p-5 flex items-center justify-between group transition-all duration-300 shadow-sm hover:shadow-lg hover:scale-[1.02] active:scale-95"
+                    >
+                      <div className="flex items-center space-x-4">
+                        <div className="bg-emerald-100/50 p-3 rounded-full">
+                          <Tablet className="w-6 h-6 text-emerald-600" />
+                        </div>
+                        <div className="text-left">
+                          <h3 className="font-bold text-slate-800">Receive</h3>
+                          <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Enter Code</p>
+                        </div>
+                      </div>
+                      <div className="w-8 h-8 rounded-full bg-white/50 flex items-center justify-center">
+                         <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-600 transition-colors" />
+                      </div>
+                    </button>
+                  </div>
+                )}
+
+                {mode === 'receiver_input' && (
+                  <div className="text-center space-y-6 pt-4">
+                    <h2 className="text-xl font-bold text-slate-700">Enter Code</h2>
+                    <div className="relative">
+                      <input 
+                        autoFocus
+                        placeholder="XXXXXX"
+                        className="w-full bg-white/40 border border-white/50 text-center text-4xl font-mono font-bold tracking-[0.2em] py-6 rounded-[2rem] outline-none focus:ring-4 ring-blue-500/10 transition-all uppercase placeholder:text-slate-300/50"
+                        maxLength={6}
+                        onChange={(e) => {
+                           const v = e.target.value.toUpperCase();
+                           if(v.length===6) { 
+                             setRoomId(v); 
+                             setMode('receiver'); 
+                             setupPeerConnection(false, v); 
+                           }
+                        }}
+                      />
+                    </div>
+                    <p className="text-sm text-slate-400">Ask the sender for their room code.</p>
+                  </div>
+                )}
+
+                {(mode === 'sender' || mode === 'receiver') && (
+                  <div className="space-y-6">
+                    <div className="flex justify-center">
+                      <div className={`px-5 py-2 rounded-full backdrop-blur-md border border-white/20 flex items-center space-x-2 shadow-sm transition-colors duration-500 ${
+                        status === 'connected' ? 'bg-emerald-500/10 text-emerald-700' : 
+                        status === 'error' ? 'bg-red-500/10 text-red-700' :
+                        'bg-slate-500/10 text-slate-600'
+                      }`}>
+                        {status === 'connecting' || status === 'transferring' ? <Loader2 className="w-3 h-3 animate-spin"/> : <Wifi className="w-3 h-3"/>}
+                        <span className="text-xs font-bold uppercase tracking-widest">
+                          {status === 'error' && errorMsg ? errorMsg : status}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="text-center">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest block mb-1">Room ID</span>
+                      <button 
+                         onClick={() => { navigator.clipboard.writeText(roomId); }}
+                         className="text-4xl font-mono font-bold text-slate-800 tracking-wider hover:opacity-50 transition-opacity active:scale-95 inline-flex items-center gap-2"
+                      >
+                        {roomId}
+                        <Copy className="w-4 h-4 text-slate-300" />
+                      </button>
+                    </div>
+
+                    {mode === 'sender' && (
+                      <div className="pt-2">
+                         {status === 'connected' || status === 'completed' || status === 'transferring' || status === 'file_received' ? (
+                           <label className={`block group relative cursor-pointer ${status === 'transferring' ? 'opacity-50 pointer-events-none' : ''}`}>
+                             <div className="absolute inset-0 bg-blue-400/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                             <div className="relative h-48 bg-white/40 border-2 border-dashed border-white/60 hover:border-blue-400/50 rounded-[2rem] flex flex-col items-center justify-center transition-all duration-300 hover:scale-[1.02] active:scale-95">
+                                <div className="bg-white/60 p-4 rounded-full mb-3 shadow-sm backdrop-blur-sm">
+                                  <Files className="w-6 h-6 text-blue-600" />
+                                </div>
+                                <span className="font-semibold text-slate-700">Tap to Send</span>
+                                <span className="text-xs text-slate-400 mt-1">Select Multiple Files</span>
+                             </div>
+                             <input type="file" multiple className="hidden" onChange={(e) => e.target.files && e.target.files.length > 0 && sendFiles(e.target.files)} />
+                           </label>
+                         ) : (
+                           <div className="p-8 text-center text-slate-400 bg-slate-50/50 rounded-[2rem]">
+                              <p className="animate-pulse">Waiting for receiver...</p>
+                           </div>
+                         )}
+                         
+                         {status === 'transferring' && (
+                           <div className="text-center mt-4 text-xs font-bold text-blue-600">
+                             Sending File {currentFileIndex} of {totalFiles}...
+                           </div>
+                         )}
+                      </div>
+                    )}
+
+                    {mode === 'receiver' && (
+                      <div className="pt-2">
+                        <div className="space-y-4">
+                          {status === 'transferring' ? (
+                             <div className="text-center">
+                                <p className="text-blue-600 font-bold mb-2">Receiving File {currentFileIndex}...</p>
+                                <div className="bg-white/40 p-1.5 rounded-full backdrop-blur-md shadow-inner">
+                                  <div 
+                                    className="h-3 rounded-full bg-gradient-to-r from-blue-400 to-purple-400 transition-all duration-300"
+                                    style={{ width: `${progress}%` }}
+                                  ></div>
+                                </div>
+                             </div>
+                          ) : (
+                            <div className="h-32 flex items-center justify-center text-slate-400 bg-white/30 rounded-[2rem] border border-white/40">
+                               <p>Ready to receive...</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
-          {!user ? (
-            <div className="h-64 flex flex-col items-center justify-center space-y-4">
-              <Loader2 className="w-8 h-8 animate-spin text-blue-600 opacity-80" />
-              <p className="text-sm font-medium text-slate-500">Secure Handshake...</p>
-            </div>
-          ) : (
-            <div className="animate-in fade-in duration-700">
-              
-              {mode === 'home' && (
-                <div className="space-y-4">
-                  <div className="text-center mb-8">
-                    <h1 className="text-3xl font-bold text-slate-800 tracking-tight mb-2">Liquid Share</h1>
-                    <p className="text-slate-500 font-medium">Seamless P2P Transfer</p>
-                  </div>
+          {/* RIGHT COLUMN: Files & Previews (Renders only when files exist) */}
+          {hasFiles && (
+            <>
+              {/* Divider for Desktop */}
+              <div className="hidden lg:block w-px bg-white/40 rounded-full shrink-0"></div>
+              {/* Divider for Mobile */}
+              <div className="block lg:hidden h-px w-full bg-white/40 my-6 rounded-full shrink-0"></div>
 
-                  <button 
-                    onClick={() => {
-                      const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-                      setRoomId(newCode); 
-                      setMode('sender');
-                      setupPeerConnection(true, newCode); 
-                    }}
-                    className="w-full bg-white/60 hover:bg-white/80 border border-white/60 rounded-[1.5rem] p-5 flex items-center justify-between group transition-all duration-300 shadow-sm hover:shadow-lg hover:scale-[1.02] active:scale-95"
-                  >
-                    <div className="flex items-center space-x-4">
-                      <div className="bg-blue-100/50 p-3 rounded-full">
-                        <Smartphone className="w-6 h-6 text-blue-600" />
-                      </div>
-                      <div className="text-left">
-                        <h3 className="font-bold text-slate-800">Send</h3>
-                        <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Create Room</p>
-                      </div>
+              <div className="flex-1 flex flex-col overflow-y-auto custom-scrollbar pb-2 pr-2 animate-in slide-in-from-right-4 duration-500">
+                
+                {/* SENDER QUEUE */}
+                {mode === 'sender' && sentFiles.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="sticky top-0 bg-slate-50/80 backdrop-blur-xl py-3 z-10 rounded-2xl px-4 flex justify-between items-center shadow-sm border border-white/50">
+                      <p className="text-xs font-bold text-blue-700 uppercase tracking-wider">Sent Files ({sentFiles.length})</p>
+                      <button onClick={clearSentQueue} className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-1">
+                        <RefreshCw size={12} /> Clear
+                      </button>
                     </div>
-                    <div className="w-8 h-8 rounded-full bg-white/50 flex items-center justify-center">
-                       <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" />
-                    </div>
-                  </button>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {sentFiles.map((file, idx) => {
+                        const isImage = file.mime?.startsWith('image/');
+                        const isVideo = file.mime?.startsWith('video/');
 
-                  <button 
-                    onClick={() => setMode('receiver_input')}
-                    className="w-full bg-white/60 hover:bg-white/80 border border-white/60 rounded-[1.5rem] p-5 flex items-center justify-between group transition-all duration-300 shadow-sm hover:shadow-lg hover:scale-[1.02] active:scale-95"
-                  >
-                    <div className="flex items-center space-x-4">
-                      <div className="bg-emerald-100/50 p-3 rounded-full">
-                        <Tablet className="w-6 h-6 text-emerald-600" />
-                      </div>
-                      <div className="text-left">
-                        <h3 className="font-bold text-slate-800">Receive</h3>
-                        <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Enter Code</p>
-                      </div>
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-white/50 flex items-center justify-center">
-                       <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-600 transition-colors" />
-                    </div>
-                  </button>
-                </div>
-              )}
-
-              {mode === 'receiver_input' && (
-                <div className="text-center space-y-6 pt-4">
-                  <h2 className="text-xl font-bold text-slate-700">Enter Code</h2>
-                  <div className="relative">
-                    <input 
-                      autoFocus
-                      placeholder="XXXXXX"
-                      className="w-full bg-white/40 border border-white/50 text-center text-4xl font-mono font-bold tracking-[0.2em] py-6 rounded-[2rem] outline-none focus:ring-4 ring-blue-500/10 transition-all uppercase placeholder:text-slate-300/50"
-                      maxLength={6}
-                      onChange={(e) => {
-                         const v = e.target.value.toUpperCase();
-                         if(v.length===6) { 
-                           setRoomId(v); 
-                           setMode('receiver'); 
-                           setupPeerConnection(false, v); 
-                         }
-                      }}
-                    />
-                  </div>
-                  <p className="text-sm text-slate-400">Ask the sender for their room code.</p>
-                </div>
-              )}
-
-              {(mode === 'sender' || mode === 'receiver') && (
-                <div className="space-y-6">
-                  <div className="flex justify-center">
-                    <div className={`px-5 py-2 rounded-full backdrop-blur-md border border-white/20 flex items-center space-x-2 shadow-sm transition-colors duration-500 ${
-                      status === 'connected' ? 'bg-emerald-500/10 text-emerald-700' : 
-                      status === 'error' ? 'bg-red-500/10 text-red-700' :
-                      'bg-slate-500/10 text-slate-600'
-                    }`}>
-                      {status === 'connecting' || status === 'transferring' ? <Loader2 className="w-3 h-3 animate-spin"/> : <Wifi className="w-3 h-3"/>}
-                      <span className="text-xs font-bold uppercase tracking-widest">
-                        {status === 'error' && errorMsg ? errorMsg : status}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="text-center">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest block mb-1">Room ID</span>
-                    <button 
-                       onClick={() => { navigator.clipboard.writeText(roomId); }}
-                       className="text-4xl font-mono font-bold text-slate-800 tracking-wider hover:opacity-50 transition-opacity active:scale-95 inline-flex items-center gap-2"
-                    >
-                      {roomId}
-                      <Copy className="w-4 h-4 text-slate-300" />
-                    </button>
-                  </div>
-
-                  {mode === 'sender' && (
-                    <div className="pt-2">
-                       {status === 'connected' || status === 'completed' || status === 'transferring' || status === 'file_received' ? (
-                         <label className={`block group relative cursor-pointer ${status === 'transferring' ? 'opacity-50 pointer-events-none' : ''}`}>
-                           <div className="absolute inset-0 bg-blue-400/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
-                           <div className="relative h-48 bg-white/40 border-2 border-dashed border-white/60 hover:border-blue-400/50 rounded-[2rem] flex flex-col items-center justify-center transition-all duration-300 hover:scale-[1.02] active:scale-95">
-                              <div className="bg-white/60 p-4 rounded-full mb-3 shadow-sm backdrop-blur-sm">
-                                <Files className="w-6 h-6 text-blue-600" />
-                              </div>
-                              <span className="font-semibold text-slate-700">Tap to Send</span>
-                              <span className="text-xs text-slate-400 mt-1">Select Multiple Files</span>
-                           </div>
-                           <input type="file" multiple className="hidden" onChange={(e) => e.target.files && e.target.files.length > 0 && sendFiles(e.target.files)} />
-                         </label>
-                       ) : (
-                         <div className="p-8 text-center text-slate-400 bg-slate-50/50 rounded-[2rem]">
-                            <p className="animate-pulse">Waiting for receiver...</p>
-                         </div>
-                       )}
-                       
-                       {status === 'transferring' && (
-                         <div className="text-center mt-4 text-xs font-bold text-blue-600">
-                           Sending File {currentFileIndex} of {totalFiles}...
-                         </div>
-                       )}
-                    </div>
-                  )}
-
-                  {mode === 'receiver' && (
-                    <div className="pt-2">
-                      <div className="space-y-4">
-                        {status === 'transferring' && (
-                           <div className="text-center">
-                              <p className="text-blue-600 font-bold mb-2">Receiving File {currentFileIndex}...</p>
-                              <div className="bg-white/40 p-1.5 rounded-full backdrop-blur-md shadow-inner">
-                                <div 
-                                  className="h-3 rounded-full bg-gradient-to-r from-blue-400 to-purple-400 transition-all duration-300"
-                                  style={{ width: `${progress}%` }}
-                                ></div>
-                              </div>
-                           </div>
-                        )}
-
-                        {fileQueue.length > 0 && (
-                          <div className="space-y-2 max-h-60 overflow-y-auto">
-                            <p className="text-xs font-bold text-emerald-700 uppercase tracking-wider text-center">Received Files</p>
-                            {fileQueue.map((file, idx) => (
-                              <div key={idx} className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 flex items-center justify-between animate-in slide-in-from-bottom-2">
-                                <div className="flex items-center gap-3 overflow-hidden">
-                                  <div className="bg-emerald-500 p-2 rounded-full text-white">
-                                    <Check size={14} />
-                                  </div>
-                                  <span className="text-xs text-emerald-900 font-medium truncate max-w-[150px]">{file.name}</span>
+                        return (
+                          <div key={idx} className="bg-white/60 border border-blue-500/20 rounded-[1.5rem] p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-all">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-start gap-3 overflow-hidden">
+                                <div className="bg-blue-100 p-2 rounded-full text-blue-600 shrink-0">
+                                  <Check size={16} />
                                 </div>
-                                {file.savedToDisk ? (
-                                    <span className="text-xs text-emerald-600 font-bold italic">Saved to Disk</span>
-                                ) : (
-                                    <a 
-                                      href={file.url!}
-                                      download={file.name} 
-                                      className="bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg hover:bg-emerald-600 transition-colors"
-                                    >
-                                      Save
-                                    </a>
-                                )}
+                                <span className="text-sm text-slate-700 font-semibold truncate leading-tight mt-1">{file.name}</span>
                               </div>
-                            ))}
-                            
-                            <button 
-                              onClick={clearQueue}
-                              className="w-full mt-4 flex items-center justify-center gap-2 bg-slate-100 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-200 transition-colors"
-                            >
-                              <RefreshCw size={16} />
-                              Clear & Ready for More
-                            </button>
+                            </div>
+                            {file.url && (isImage || isVideo) && (
+                              <div className="rounded-xl overflow-hidden bg-black/5 flex items-center justify-center border border-black/5 aspect-video mt-auto">
+                                {isImage && <img src={file.url} alt={file.name} className="h-full w-full object-cover" />}
+                                {isVideo && <video src={file.url} controls className="h-full w-full object-cover bg-black/90 outline-none" />}
+                              </div>
+                            )}
                           </div>
-                        )}
-                        
-                        {fileQueue.length === 0 && status !== 'transferring' && (
-                           <div className="h-32 flex items-center justify-center text-slate-400">
-                             <p>Ready to receive...</p>
-                           </div>
-                        )}
-                      </div>
+                        );
+                      })}
                     </div>
-                  )}
+                  </div>
+                )}
 
-                </div>
-              )}
-            </div>
+                {/* RECEIVER QUEUE */}
+                {mode === 'receiver' && fileQueue.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="sticky top-0 bg-slate-50/80 backdrop-blur-xl py-3 z-10 rounded-2xl px-4 flex justify-between items-center shadow-sm border border-white/50">
+                      <p className="text-xs font-bold text-emerald-700 uppercase tracking-wider">Received Files ({fileQueue.length})</p>
+                      <button onClick={clearReceiveQueue} className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-1">
+                        <RefreshCw size={12} /> Clear
+                      </button>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {fileQueue.map((file, idx) => {
+                        const isImage = file.mime?.startsWith('image/');
+                        const isVideo = file.mime?.startsWith('video/');
+
+                        return (
+                          <div key={idx} className="bg-white/60 border border-emerald-500/20 rounded-[1.5rem] p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-all">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-start gap-3 overflow-hidden">
+                                <div className="bg-emerald-100 p-2 rounded-full text-emerald-600 shrink-0">
+                                  <Check size={16} />
+                                </div>
+                                <span className="text-sm text-slate-700 font-semibold truncate leading-tight mt-1">{file.name}</span>
+                              </div>
+                            </div>
+                            
+                            {file.url && (isImage || isVideo) && (
+                              <div className="rounded-xl overflow-hidden bg-black/5 flex items-center justify-center border border-black/5 aspect-video">
+                                {isImage && <img src={file.url} alt={file.name} className="h-full w-full object-cover" />}
+                                {isVideo && <video src={file.url} controls className="h-full w-full object-cover bg-black/90 outline-none" />}
+                              </div>
+                            )}
+
+                            <div className="mt-auto pt-2 flex justify-end">
+                              {file.savedToDisk ? (
+                                  <span className="text-xs text-emerald-600 font-bold bg-emerald-50 px-3 py-1 rounded-full">Saved to Disk</span>
+                              ) : (
+                                  <a 
+                                    href={file.url!}
+                                    download={file.name} 
+                                    className="bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-emerald-600 transition-transform active:scale-95 shadow-sm w-full text-center"
+                                  >
+                                    Save File
+                                  </a>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            </>
           )}
         </div>
       </div>
