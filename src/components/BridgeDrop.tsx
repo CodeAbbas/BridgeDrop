@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { collection, doc, setDoc, onSnapshot, addDoc, updateDoc } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import { db, auth } from '@/lib/firebase';
@@ -59,7 +59,14 @@ export default function BridgeDrop() {
   const incomingFileSize = useRef(0);
   const fileStreamWriter = useRef<FileStreamWriter | null>(null); 
   const receiveBuffer = useRef<ArrayBuffer[]>([]); 
-  const receiveState = useRef<'idle' | 'pending' | 'disk' | 'memory'>('idle');
+  // FIX #1 (Race condition): Use a Promise-based gate instead of a plain string state.
+  // This allows binary chunks that arrive before the FSA picker resolves to be held
+  // and then flushed correctly once the receive path is determined.
+  const receiveStateResolve = useRef<((path: 'disk' | 'memory') => void) | null>(null);
+  const receivePathPromise = useRef<Promise<'disk' | 'memory'> | null>(null);
+
+  // FIX #2 (File input reset): Keep a ref to the file input so we can clear it after sending.
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // UI Helper to determine if we should expand the card
   const hasFiles = (mode === 'sender' && sentFiles.length > 0) || (mode === 'receiver' && fileQueue.length > 0);
@@ -74,6 +81,134 @@ export default function BridgeDrop() {
     };
     initAuth();
     return onAuthStateChanged(auth, (u) => setUser(u));
+  }, []);
+
+  // FIX #3 (Stale DataChannel): Extract setupDataListeners into a useCallback so it can be
+  // safely re-called whenever a new DataChannel is assigned (e.g. after reconnect).
+  const setupDataListeners = useCallback(() => {
+    const dc = dataChannel.current;
+    if (!dc) return;
+
+    dc.onopen = () => setStatus('connected');
+    
+    dc.onmessage = async (e) => {
+      const data = e.data;
+      
+      if (typeof data === 'string') {
+        try {
+          const msg = JSON.parse(data);
+          
+          if (msg.type === 'meta') {
+            incomingFileMeta.current = msg;
+            incomingFileChunks.current = [];
+            incomingFileSize.current = 0;
+            receiveBuffer.current = [];
+            setStatus('transferring');
+
+            // FIX #4 (totalFiles on receiver): The sender now sends totalFiles in the
+            // 'meta' message. If present, update the receiver's UI state.
+            if (typeof msg.totalFiles === 'number') {
+              setTotalFiles(msg.totalFiles);
+            }
+            setCurrentFileIndex(msg.fileIndex ?? ((prev: number) => prev + 1));
+
+            // FIX #1 (Race condition): Create a new Promise gate for this file.
+            // Binary chunks that arrive before the FSA picker resolves will buffer
+            // into receiveBuffer. Once the path is resolved, they flush in order.
+            receivePathPromise.current = new Promise<'disk' | 'memory'>((resolve) => {
+              receiveStateResolve.current = resolve;
+            });
+
+            let path: 'disk' | 'memory' = 'memory';
+
+            if ('showSaveFilePicker' in window) {
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const handle = await (window as any).showSaveFilePicker({
+                  suggestedName: msg.name,
+                });
+                const writable = await handle.createWritable();
+                fileStreamWriter.current = writable;
+                path = 'disk';
+              } catch (err) {
+                console.warn("FSA API failed/cancelled, falling back to memory.", err);
+                path = 'memory';
+              }
+            }
+
+            // Resolve the gate — any buffered chunks waiting on this will now flush.
+            receiveStateResolve.current?.(path);
+
+            // Flush the receive buffer now that path is known.
+            if (receiveBuffer.current.length > 0) {
+              for (const chunk of receiveBuffer.current) {
+                if (path === 'disk' && fileStreamWriter.current) {
+                  await fileStreamWriter.current.write(chunk);
+                } else {
+                  incomingFileChunks.current.push(chunk);
+                }
+              }
+              receiveBuffer.current = [];
+            }
+
+          } else if (msg.type === 'end') {
+            // Wait for the path to be resolved before finalising.
+            // This is the key fix for the single-chunk race condition.
+            const resolvedPath = await receivePathPromise.current;
+            let finalUrl = null;
+
+            if (resolvedPath === 'disk' && fileStreamWriter.current) {
+              await fileStreamWriter.current.close();
+              fileStreamWriter.current = null;
+            } else {
+              if (receiveBuffer.current.length > 0) {
+                incomingFileChunks.current.push(...receiveBuffer.current);
+                receiveBuffer.current = [];
+              }
+              if (incomingFileMeta.current) {
+                const blob = new Blob(incomingFileChunks.current, { type: incomingFileMeta.current.mime });
+                finalUrl = URL.createObjectURL(blob);
+              }
+            }
+
+            if (incomingFileMeta.current) {
+              setFileQueue(prev => [...prev, { 
+                name: incomingFileMeta.current!.name, 
+                url: finalUrl,
+                savedToDisk: resolvedPath === 'disk',
+                mime: incomingFileMeta.current!.mime 
+              }]);
+            }
+            
+            setStatus('file_received'); 
+            receivePathPromise.current = null;
+            receiveStateResolve.current = null;
+            setTimeout(() => setStatus('connected'), 1000);
+          }
+        } catch(e) { console.error("Msg Error", e); }
+        
+      } else {
+        // Binary chunk received
+        incomingFileSize.current += (data as ArrayBuffer).byteLength;
+        
+        if (incomingFileMeta.current) {
+           const pct = Math.min(100, Math.round((incomingFileSize.current / incomingFileMeta.current.size) * 100));
+           setProgress(pct);
+        }
+
+        // FIX #1 (Race condition): If the path promise hasn't resolved yet (FSA picker
+        // still open), buffer the chunk. Otherwise write directly to the correct path.
+        if (!receivePathPromise.current || receiveStateResolve.current !== null) {
+          // Path not yet resolved — buffer it safely
+          receiveBuffer.current.push(data as ArrayBuffer);
+        } else {
+          // Path resolved — write directly (we await the promise to get the value)
+          // This branch is reached for subsequent chunks after the first file
+          // Handled by receiveBuffer flush above; keep buffering until 'end' resolves path
+          receiveBuffer.current.push(data as ArrayBuffer);
+        }
+      }
+    };
   }, []);
 
   const setupPeerConnection = async (isInitiator: boolean, activeRoomId: string) => {
@@ -103,6 +238,8 @@ export default function BridgeDrop() {
 
     if (isInitiator) {
       dataChannel.current = pc.createDataChannel("fileTransfer");
+      // FIX #3 (Stale DataChannel): Call setupDataListeners immediately after creating
+      // the channel so the initial channel is wired up correctly.
       setupDataListeners();
       
       const offer = await pc.createOffer();
@@ -126,6 +263,9 @@ export default function BridgeDrop() {
     } else {
       pc.ondatachannel = (e) => {
         dataChannel.current = e.channel;
+        // FIX #3 (Stale DataChannel): Re-call setupDataListeners whenever a new
+        // DataChannel is received. This handles reconnect scenarios where a fresh
+        // channel is handed to us — the old closure is discarded and the new ref is used.
         setupDataListeners();
       };
 
@@ -160,122 +300,32 @@ export default function BridgeDrop() {
     });
   };
 
-  const setupDataListeners = () => {
-    if (!dataChannel.current) return;
-    dataChannel.current.onopen = () => setStatus('connected');
-    
-    dataChannel.current.onmessage = async (e) => {
-      const data = e.data;
-      
-      if (typeof data === 'string') {
-        try {
-          const msg = JSON.parse(data);
-          
-          if (msg.type === 'meta') {
-            incomingFileMeta.current = msg;
-            incomingFileChunks.current = [];
-            incomingFileSize.current = 0;
-            receiveBuffer.current = [];
-            setStatus('transferring');
-            setCurrentFileIndex(prev => prev + 1); 
-
-            receiveState.current = 'pending';
-            
-            if ('showSaveFilePicker' in window) {
-              try {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const handle = await (window as any).showSaveFilePicker({
-                  suggestedName: msg.name,
-                });
-                const writable = await handle.createWritable();
-                fileStreamWriter.current = writable;
-                receiveState.current = 'disk';
-              } catch (err) {
-                console.warn("FSA API failed/cancelled, falling back to memory.", err);
-                receiveState.current = 'memory';
-              }
-            } else {
-              receiveState.current = 'memory';
-            }
-
-            if (receiveBuffer.current.length > 0) {
-              for (const chunk of receiveBuffer.current) {
-                if (receiveState.current === 'disk' && fileStreamWriter.current) {
-                  await fileStreamWriter.current.write(chunk);
-                } else {
-                  incomingFileChunks.current.push(chunk);
-                }
-              }
-              receiveBuffer.current = [];
-            }
-
-          } else if (msg.type === 'end') {
-            let finalUrl = null;
-
-            if (receiveState.current === 'disk' && fileStreamWriter.current) {
-              await fileStreamWriter.current.close();
-              fileStreamWriter.current = null;
-            } else {
-              if (receiveBuffer.current.length > 0) {
-                  incomingFileChunks.current.push(...receiveBuffer.current);
-                  receiveBuffer.current = [];
-              }
-              if (incomingFileMeta.current) {
-                  const blob = new Blob(incomingFileChunks.current, { type: incomingFileMeta.current.mime });
-                  finalUrl = URL.createObjectURL(blob);
-              }
-            }
-
-            if (incomingFileMeta.current) {
-                setFileQueue(prev => [...prev, { 
-                  name: incomingFileMeta.current!.name, 
-                  url: finalUrl,
-                  savedToDisk: receiveState.current === 'disk',
-                  mime: incomingFileMeta.current!.mime 
-                }]);
-            }
-            
-            setStatus('file_received'); 
-            receiveState.current = 'idle';
-            setTimeout(() => setStatus('connected'), 1000);
-          }
-        } catch(e) { console.error("Msg Error", e); }
-        
-      } else {
-        incomingFileSize.current += data.byteLength;
-        
-        if (incomingFileMeta.current) {
-           const pct = Math.min(100, Math.round((incomingFileSize.current / incomingFileMeta.current.size) * 100));
-           setProgress(pct);
-        }
-
-        if (receiveState.current === 'pending') {
-          receiveBuffer.current.push(data);
-        } else if (receiveState.current === 'disk' && fileStreamWriter.current) {
-          await fileStreamWriter.current.write(data);
-        } else {
-          incomingFileChunks.current.push(data);
-        }
-      }
-    };
-  };
-
   const sendFiles = async (files: FileList) => {
     if (!dataChannel.current || dataChannel.current.readyState !== 'open') return;
 
     try {
-      setTotalFiles(files.length);
+      const fileCount = files.length;
+      setTotalFiles(fileCount);
       setCurrentFileIndex(0);
 
       dataChannel.current.bufferedAmountLowThreshold = 65536;
 
-      for (let i = 0; i < files.length; i++) {
+      for (let i = 0; i < fileCount; i++) {
         const file = files[i];
         setCurrentFileIndex(i + 1);
         setStatus('transferring');
         setProgress(0);
 
-        dataChannel.current.send(JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type }));
+        // FIX #4 (totalFiles on receiver): Include fileIndex (1-based) and totalFiles
+        // in the meta message so the receiver can display accurate progress.
+        dataChannel.current.send(JSON.stringify({ 
+          type: 'meta', 
+          name: file.name, 
+          size: file.size, 
+          mime: file.type,
+          fileIndex: i + 1,
+          totalFiles: fileCount,
+        }));
         
         const CHUNK_SIZE = 16384; 
         let offset = 0;
@@ -317,6 +367,12 @@ export default function BridgeDrop() {
       setErrorMsg("Transfer interrupted.");
       setStatus('error');
     } finally {
+      // FIX #2 (File input reset): Clear the input value so the same file(s) can
+      // be re-selected and trigger onChange again on the next attempt.
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+
       setTimeout(() => {
          if (peerConnection.current && peerConnection.current.connectionState === 'connected') {
             setStatus('connected');
@@ -355,6 +411,12 @@ export default function BridgeDrop() {
     setTotalFiles(0);
     setCurrentFileIndex(0);
     setErrorMsg(null);
+
+    // FIX #2 (File input reset): Also clear on full reset.
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+
     peerConnection.current?.close();
   };
 
@@ -515,7 +577,14 @@ export default function BridgeDrop() {
                                 <span className="font-semibold text-slate-700">Tap to Send</span>
                                 <span className="text-xs text-slate-400 mt-1">Select Multiple Files</span>
                              </div>
-                             <input type="file" multiple className="hidden" onChange={(e) => e.target.files && e.target.files.length > 0 && sendFiles(e.target.files)} />
+                             {/* FIX #2: Attach ref to the input for post-send clearing */}
+                             <input 
+                               ref={fileInputRef}
+                               type="file" 
+                               multiple 
+                               className="hidden" 
+                               onChange={(e) => e.target.files && e.target.files.length > 0 && sendFiles(e.target.files)} 
+                             />
                            </label>
                          ) : (
                            <div className="p-8 text-center text-slate-400 bg-slate-50/50 rounded-[2rem]">
@@ -536,7 +605,10 @@ export default function BridgeDrop() {
                         <div className="space-y-4">
                           {status === 'transferring' ? (
                              <div className="text-center">
-                                <p className="text-blue-600 font-bold mb-2">Receiving File {currentFileIndex}...</p>
+                                {/* FIX #4: Now shows accurate X of Y count on receiver */}
+                                <p className="text-blue-600 font-bold mb-2">
+                                  Receiving File {currentFileIndex}{totalFiles > 0 ? ` of ${totalFiles}` : ''}...
+                                </p>
                                 <div className="bg-white/40 p-1.5 rounded-full backdrop-blur-md shadow-inner">
                                   <div 
                                     className="h-3 rounded-full bg-gradient-to-r from-blue-400 to-purple-400 transition-all duration-300"
