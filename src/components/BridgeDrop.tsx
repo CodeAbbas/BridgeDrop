@@ -4,7 +4,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { collection, doc, setDoc, onSnapshot, addDoc, updateDoc } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import { db, auth } from '@/lib/firebase';
-import { Wifi, Smartphone, Tablet, Check, Loader2, Share2, ArrowRight, X, Copy, Files, RefreshCw } from 'lucide-react';
+import { Wifi, Smartphone, Tablet, Check, Loader2, Share2, ArrowRight, X, Copy, Files, RefreshCw, ScanLine } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 
 const rtcConfig = {
   iceServers: [
@@ -68,6 +69,10 @@ export default function BridgeDrop() {
   // FIX #2 (File input reset): Keep a ref to the file input so we can clear it after sending.
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [receiverTab, setReceiverTab] = useState<'code' | 'scan'>('code');
+  const qrScannerRef = useRef<import('html5-qrcode').Html5Qrcode | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+
   // UI Helper to determine if we should expand the card
   const hasFiles = (mode === 'sender' && sentFiles.length > 0) || (mode === 'receiver' && fileQueue.length > 0);
 
@@ -80,6 +85,20 @@ export default function BridgeDrop() {
       }
     };
     initAuth();
+
+    // NEW: Auto-join if URL has ?room=XXXXXX
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const roomParam = urlParams.get('room');
+      if (roomParam && roomParam.length === 6) {
+        setRoomId(roomParam.toUpperCase());
+        setMode('receiver');
+        setupPeerConnection(false, roomParam.toUpperCase());
+        // Clean up URL so it doesn't refresh into the same room
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
+
     return onAuthStateChanged(auth, (u) => setUser(u));
   }, []);
 
@@ -210,6 +229,64 @@ export default function BridgeDrop() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (mode !== 'receiver_input' || receiverTab !== 'scan') {
+      qrScannerRef.current?.stop().catch(() => {});
+      qrScannerRef.current = null;
+      setScanError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const startScanner = async () => {
+      const { Html5Qrcode } = await import('html5-qrcode');
+      if (cancelled) return;
+
+      const scanner = new Html5Qrcode('qr-reader');
+      qrScannerRef.current = scanner;
+
+      try {
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 220, height: 220 } },
+          (decodedText) => {
+            scanner.stop().catch(() => {});
+            qrScannerRef.current = null;
+
+            let code = decodedText.trim().toUpperCase();
+            try {
+              const url = new URL(decodedText);
+              const param = url.searchParams.get('room');
+              if (param) code = param.toUpperCase();
+            } catch { /* not a URL, use raw value */ }
+
+            if (code.length === 6) {
+              setRoomId(code);
+              setMode('receiver');
+              setupPeerConnection(false, code);
+            } else {
+              setScanError('Invalid QR code. Ask the sender for their QR.');
+            }
+          },
+          () => { /* frame errors are normal */ }
+        );
+      } catch (err) {
+        setScanError('Camera access denied or unavailable.');
+        console.error(err);
+      }
+    };
+
+    startScanner();
+
+    return () => {
+      cancelled = true;
+      qrScannerRef.current?.stop().catch(() => {});
+      qrScannerRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, receiverTab]);
 
   const setupPeerConnection = async (isInitiator: boolean, activeRoomId: string) => {
     if (!activeRoomId) return;
@@ -399,6 +476,7 @@ export default function BridgeDrop() {
   const reset = () => {
     setMode('home');
     setRoomId('');
+    setReceiverTab('code');
     setStatus('idle');
     setProgress(0);
     
@@ -517,25 +595,69 @@ export default function BridgeDrop() {
                 )}
 
                 {mode === 'receiver_input' && (
-                  <div className="text-center space-y-6 pt-4">
-                    <h2 className="text-xl font-bold text-slate-700">Enter Code</h2>
-                    <div className="relative">
-                      <input 
-                        autoFocus
-                        placeholder="XXXXXX"
-                        className="w-full bg-white/40 border border-white/50 text-center text-4xl font-mono font-bold tracking-[0.2em] py-6 rounded-[2rem] outline-none focus:ring-4 ring-blue-500/10 transition-all uppercase placeholder:text-slate-300/50"
-                        maxLength={6}
-                        onChange={(e) => {
-                           const v = e.target.value.toUpperCase();
-                           if(v.length===6) { 
-                             setRoomId(v); 
-                             setMode('receiver'); 
-                             setupPeerConnection(false, v); 
-                           }
-                        }}
-                      />
+                  <div className="space-y-5 pt-4">
+                    {/* Tab toggle */}
+                    <div className="flex bg-white/40 border border-white/50 rounded-2xl p-1 gap-1">
+                      <button
+                        onClick={() => setReceiverTab('code')}
+                        className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all duration-200 flex items-center justify-center gap-2 ${
+                          receiverTab === 'code'
+                            ? 'bg-white shadow-sm text-slate-800'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        Enter Code
+                      </button>
+                      <button
+                        onClick={() => setReceiverTab('scan')}
+                        className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all duration-200 flex items-center justify-center gap-2 ${
+                          receiverTab === 'scan'
+                            ? 'bg-white shadow-sm text-slate-800'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        <ScanLine className="w-4 h-4" />
+                        Scan QR
+                      </button>
                     </div>
-                    <p className="text-sm text-slate-400">Ask the sender for their room code.</p>
+
+                    {receiverTab === 'code' && (
+                      <div className="text-center space-y-4">
+                        <input
+                          autoFocus
+                          placeholder="XXXXXX"
+                          className="w-full bg-white/40 border border-white/50 text-center text-4xl font-mono font-bold tracking-[0.2em] py-6 rounded-[2rem] outline-none focus:ring-4 ring-blue-500/10 transition-all uppercase placeholder:text-slate-300/50"
+                          maxLength={6}
+                          onChange={(e) => {
+                            const v = e.target.value.toUpperCase();
+                            if (v.length === 6) {
+                              setRoomId(v);
+                              setMode('receiver');
+                              setupPeerConnection(false, v);
+                            }
+                          }}
+                        />
+                        <p className="text-sm text-slate-400">Ask the sender for their room code.</p>
+                      </div>
+                    )}
+
+                    {receiverTab === 'scan' && (
+                      <div className="space-y-3">
+                        <div className="relative overflow-hidden rounded-[2rem] bg-black/5 border border-white/40">
+                          <div id="qr-reader" className="w-full" />
+                          {/* Viewfinder overlay */}
+                          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                            <div className="w-48 h-48 border-2 border-blue-400/60 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]" />
+                          </div>
+                        </div>
+                        {scanError && (
+                          <p className="text-center text-xs text-red-500 font-medium">{scanError}</p>
+                        )}
+                        {!scanError && (
+                          <p className="text-center text-xs text-slate-400">Point camera at the sender&apos;s QR code.</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -563,6 +685,19 @@ export default function BridgeDrop() {
                         {roomId}
                         <Copy className="w-4 h-4 text-slate-300" />
                       </button>
+                      {/* QR CODE BLOCK */}
+                      {mode === 'sender' && (
+                        <div className="flex justify-center mt-4 animate-in zoom-in duration-500">
+                          <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-200">
+                            <QRCodeSVG 
+                              value={`${typeof window !== 'undefined' ? window.location.origin : ''}?room=${roomId}`}
+                              size={120}
+                              level={"M"}
+                              className="rounded-lg"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {mode === 'sender' && (
