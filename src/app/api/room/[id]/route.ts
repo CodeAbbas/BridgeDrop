@@ -1,120 +1,47 @@
-/**
- * GET /api/room/[id]
- *
- * Retrieves room metadata from Cosmos DB (SQL API).
- * The room document holds the list of files a sender uploaded, including
- * each file's pre-signed read URL so the receiver can download from Blob Storage.
- *
- * Document TTL is controlled by the Cosmos DB container default (24 h).
- * Rooms that have expired are treated as 404.
- *
- * ── APIM ROUTING STUB ────────────────────────────────────────────────────────
- * If this route will be fronted by Azure API Management, replace the Cosmos DB
- * logic below with a thin forwarding call:
- *
- *   const apimUrl = `${process.env.APIM_BASE_URL}/room/${roomId}`;
- *   const upstream = await fetch(apimUrl, {
- *     headers: {
- *       'Ocp-Apim-Subscription-Key': process.env.APIM_SUBSCRIPTION_KEY!,
- *     },
- *     next: { revalidate: 0 }, // always fresh
- *   });
- *   return NextResponse.json(await upstream.json(), { status: upstream.status });
- *
- * In that model APIM handles auth, rate-limiting, caching, and routing to the
- * Cosmos DB backend; this handler only owns the HTTP boundary.
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Required environment variables:
- *   COSMOS_ENDPOINT        https://<account>.documents.azure.com:443/
- *   COSMOS_KEY             Primary or secondary master key
- *   COSMOS_DATABASE_ID     bridgedrop-db  (matches Terraform output)
- *   COSMOS_CONTAINER_ID    room-metadata  (matches Terraform output)
- */
-
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { CosmosClient } from '@azure/cosmos';
 
-// ---------------------------------------------------------------------------
-// Client — module-level singleton; reused across warm Lambda/container invocations.
-// ---------------------------------------------------------------------------
-const cosmosClient = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
+// Initialize Cosmos configuration
+const endpoint = process.env.COSMOS_ENDPOINT!;
+const key = process.env.COSMOS_KEY!;
+const databaseId = process.env.COSMOS_DATABASE_ID!;
+const containerId = process.env.COSMOS_CONTAINER_ID!;
 
-const roomContainer = cosmosClient
-  .database(process.env.COSMOS_DATABASE_ID ?? 'bridgedrop-db')
-  .container(process.env.COSMOS_CONTAINER_ID ?? 'room-metadata');
+// Singleton client to prevent exhausting connection pools
+const client = new CosmosClient({ endpoint, key });
+const container = client.database(databaseId).container(containerId);
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/** Shape of a single file entry inside a room document. */
-export interface RoomFile {
-  name: string;
-  sizeBytes: number;
-  mimeType: string;
-  /** Pre-signed read URL (SAS) or permanent public URL, depending on access model. */
-  blobUrl: string;
-}
-
-/**
- * Cosmos DB document schema for the `room-metadata` container.
- * id == roomId so every lookup is a direct point-read (1 RU, O(1)).
- */
-interface RoomDocument {
-  id: string;
-  roomId: string; // partition key — /roomId
-  files: RoomFile[];
-  createdAt: number; // unix ms
-}
-
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-
-type RouteContext = { params: Promise<{ id: string }> };
-
-export async function GET(_req: NextRequest, { params }: RouteContext) {
-  const { id } = await params;
-  const roomId = id.toUpperCase();
-
-  if (!/^[A-Z0-9]{6}$/.test(roomId)) {
-    return NextResponse.json(
-      { error: 'Invalid room ID. Must be exactly 6 alphanumeric characters.' },
-      { status: 400 }
-    );
-  }
-
+// In Next.js 16+, params is a Promise
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
-    // Point read: O(1), cheapest Cosmos DB operation possible.
-    // Works because we store documents with id === roomId (the partition key).
-    const { resource } = await roomContainer
-      .item(roomId, roomId)
-      .read<RoomDocument>();
+    const resolvedParams = await params;
+    const roomId = resolvedParams.id.toUpperCase();
 
-    if (!resource) {
-      return NextResponse.json(
-        { error: 'Room not found or has expired.' },
-        { status: 404 }
-      );
+    console.log(`[room GET] Request for roomId=${roomId}`);
+
+    if (!roomId || roomId.length !== 6) {
+      console.warn(`[room GET] Invalid Room ID: "${roomId}"`);
+      return NextResponse.json({ error: 'Invalid Room ID' }, { status: 400 });
     }
 
-    return NextResponse.json({ files: resource.files });
-  } catch (err: unknown) {
-    // Cosmos SDK throws an object with a numeric `code` on 404/409/etc.
-    const cosmosErr = err as { code?: number };
+    // O(1) point-read — id and partition key are both roomId
+    console.log(`[room GET] Point-reading Cosmos DB: id=${roomId} partitionKey=${roomId}`);
+    const { resource: room, statusCode } = await container.item(roomId, roomId).read();
+    console.log(`[room GET] Cosmos statusCode=${statusCode} room=${room ? `found (${room.files?.length ?? 0} files)` : 'not found'}`);
 
-    if (cosmosErr.code === 404) {
-      return NextResponse.json(
-        { error: 'Room not found or has expired.' },
-        { status: 404 }
-      );
+    if (statusCode === 404 || !room) {
+      console.warn(`[room GET] Room ${roomId} not found or TTL-expired (statusCode=${statusCode})`);
+      return NextResponse.json({ error: 'Room not found or expired' }, { status: 404 });
     }
 
-    console.error('[GET /api/room/[id]]', err);
-    return NextResponse.json({ error: 'Internal server error.' }, { status: 500 });
+    console.log(`[room GET] Returning ${room.files?.length ?? 0} file(s) for room ${roomId}`);
+    return NextResponse.json({ success: true, files: room.files }, { status: 200 });
+
+  } catch (error: any) {
+    console.error(`[room GET] Cosmos DB error:`, error?.message, error?.code, error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

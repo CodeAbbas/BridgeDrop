@@ -133,20 +133,49 @@ export default function BridgeDrop() {
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        
-        // 1. Request SAS Token from Logic App
-        // const sasResponse = await fetch(`${API_BASE_URL}/upload/generate-sas`, { method: 'POST', ... });
-        // const { sasUrl } = await sasResponse.json();
 
-        // 2. Upload heavy file directly to Azure Blob Storage using PUT
-        // await fetch(sasUrl, { method: 'PUT', body: file, headers: { 'x-ms-blob-type': 'BlockBlob' } });
+        // 1. Request SAS Token from our Next.js API
+        const sasResponse = await fetch(`${API_BASE_URL}/upload/generate-sas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roomId: roomId, fileName: file.name, mimeType: file.type })
+        });
 
-        // 3. Notify Logic App that upload is complete so it can update Cosmos DB
-        // await fetch(`${API_BASE_URL}/upload/finalize`, { ... });
+        if (!sasResponse.ok) {
+          const errBody = await sasResponse.json().catch(() => ({}));
+          console.error('[generate-sas] failed:', sasResponse.status, errBody);
+          throw new Error('Failed to generate secure upload token');
+        }
+        const { sasUrl, blobUrl } = await sasResponse.json();
+        console.log('[generate-sas] received sasUrl:', sasUrl, 'blobUrl:', blobUrl);
 
-        // Simulated progress for now
+        // 2. Upload heavy file DIRECTLY to Azure Blob Storage using PUT (Bypasses server limits)
+        const uploadResponse = await fetch(sasUrl, {
+          method: 'PUT',
+          body: file,
+          headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': file.type }
+        });
+
+        if (!uploadResponse.ok) throw new Error(`Azure Blob Storage rejected the file: ${file.name}`);
+
+        // 3. Notify Cosmos DB that upload is complete
+        const finalizeResponse = await fetch(`${API_BASE_URL}/upload/finalise`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomId: roomId,
+            fileName: file.name,
+            blobUrl: blobUrl, // The clean URL without the SAS signature
+            sizeBytes: file.size,
+            mimeType: file.type
+          })
+        });
+
+        if (!finalizeResponse.ok) throw new Error('Failed to save file metadata to database');
+
+        // Update progress and local state
         setProgress(Math.round(((i + 1) / files.length) * 100));
-        uploadedMeta.push({ name: file.name, sizeBytes: file.size, mimeType: file.type });
+        uploadedMeta.push({ name: file.name, sizeBytes: file.size, mimeType: file.type, blobUrl: blobUrl });
       }
 
       setSentFiles(prev => [...prev, ...uploadedMeta]);
@@ -155,7 +184,7 @@ export default function BridgeDrop() {
     } catch (err: any) {
       console.error(err);
       setStatus('error');
-      setErrorMsg('Upload failed.');
+      setErrorMsg(err.message || 'Upload failed.');
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }

@@ -63,10 +63,11 @@ interface SasResponseBody {
   /** Complete URL the browser PUTs to. Includes the SAS token as a query string. */
   sasUrl: string;
   /**
+   * Permanent clean URL (no SAS token) stored in Cosmos DB and used for downloads.
    * Blob path relative to the container (e.g. "ABC123/uuid-photo.jpg").
-   * Pass this to POST /api/upload/finalize so the server can build the
-   * permanent read URL and write it into Cosmos DB.
    */
+  blobUrl: string;
+  /** Blob path relative to the container — kept for server-side use. */
   blobName: string;
   /** ISO 8601 expiry — the frontend can show a countdown or retry prompt. */
   expiresAt: string;
@@ -140,15 +141,25 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    console.log(`[generate-sas] Generating SAS for roomId=${roomId} blobName=${blobName}`);
+
     const sasToken = generateBlobSASQueryParameters(
       sasValues,
       sharedKeyCredential
     ).toString();
 
-    const sasUrl = `https://${accountName}.blob.core.windows.net/${containerName}/${encodeURIComponent(blobName)}?${sasToken}`;
+    // Encode each path segment separately so the '/' virtual-directory separator
+    // is preserved while special chars in file names are safely encoded.
+    const encodedBlobPath = blobName.split('/').map(encodeURIComponent).join('/');
+    const blobBaseUrl = `https://${accountName}.blob.core.windows.net/${containerName}/${encodedBlobPath}`;
+    const sasUrl = `${blobBaseUrl}?${sasToken}`;
+
+    console.log(`[generate-sas] sasUrl generated (first 80 chars): ${sasUrl.slice(0, 80)}...`);
+    console.log(`[generate-sas] clean blobUrl: ${blobBaseUrl}`);
 
     const responseBody: SasResponseBody = {
       sasUrl,
+      blobUrl: blobBaseUrl,
       blobName,
       expiresAt: expiresOn.toISOString(),
     };
@@ -156,7 +167,7 @@ export async function POST(req: NextRequest) {
     // 201 Created — a new upload credential has been provisioned.
     return NextResponse.json(responseBody, { status: 201 });
   } catch (err) {
-    console.error('[POST /api/upload/generate-sas]', err);
+    console.error('[generate-sas] Failed to generate SAS token:', err);
     return NextResponse.json(
       { error: 'Failed to generate upload token.' },
       { status: 500 }
