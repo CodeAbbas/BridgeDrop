@@ -6,3 +6,6 @@ README.md
 .next
 .git
 .github
+.env
+.env.local
+.env.production

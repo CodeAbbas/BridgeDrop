@@ -3,17 +3,60 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Wifi, Smartphone, Tablet, Check, Loader2, Share2, ArrowRight, X, Copy, Files, RefreshCw, ScanLine } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import { FileCard } from './FileCard';
 
 // AZURE API ENDPOINT (To be configured in Azure API Management)
 const API_BASE_URL = process.env.NEXT_PUBLIC_AZURE_API_URL || '/api';
 
 interface FileMeta {
+  id?: string;
   name: string;
   sizeBytes: number;
   mimeType: string;
   blobUrl?: string;
+  uploadedAt?: string;
+}
+// --- API response contracts (src/app/api/...) ---------------------
+interface SasResponse {
+  sasUrl: string;
+  blobUrl: string;
+  blobName: string;
+  expiresAt: string;
 }
 
+interface FinaliseResponse {
+  id: string;
+  roomId: string;
+  name: string;
+  blobUrl: string;
+  sizeBytes: number;
+  mimeType: string;
+  uploadedAt: string;
+}
+
+interface RoomFile {
+  id: string;
+  name: string;
+  blobUrl: string;
+  sizeBytes: number;
+  mimeType: string;
+  uploadedAt: string;
+}
+
+interface RoomResponse {
+  files: RoomFile[];
+}
+async function readApiError(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: unknown };
+    if (typeof body.error === 'string' && body.error.length > 0) {
+      return body.error;
+    }
+  } catch {
+    /* response wasn't JSON — fall through */
+  }
+  return fallback;
+}
 export default function BridgeDrop() {
   const [mode, setMode] = useState<'home' | 'sender' | 'receiver' | 'receiver_input'>('home');
   const [roomId, setRoomId] = useState('');
@@ -96,99 +139,197 @@ export default function BridgeDrop() {
       qrScannerRef.current = null;
     };
   }, [mode, receiverTab]);
+  // polling logic for receiver to update file list in real-time (every 4 seconds)
+  useEffect(() => {
+  if (mode !== 'receiver' || !roomId) return;
+
+  const POLL_INTERVAL_MS = 4000;
+
+  const refresh = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/room/${roomId}`, {
+        cache: 'no-store',
+      });
+      if (!response.ok) return; // silent — initial fetch handles the loud errors
+
+      const data = (await response.json()) as RoomResponse;
+
+      setReceivedFiles((prev) => {
+        const next: FileMeta[] = data.files.map((f) => ({
+          id: f.id,
+          name: f.name,
+          sizeBytes: f.sizeBytes,
+          mimeType: f.mimeType,
+          blobUrl: f.blobUrl,
+          uploadedAt: f.uploadedAt,
+        }));
+        // Bail out early when nothing changed — preserves referential
+        // equality so React skips re-rendering the file list entirely.
+        if (
+          prev.length === next.length &&
+          prev.every((p, i) => p.id === next[i].id)
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    } catch (err) {
+      console.warn('[room-poll] silent failure:', err);
+    }
+  };
+
+  const intervalId = window.setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    void refresh();
+  }, POLL_INTERVAL_MS);
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'visible') void refresh();
+  };
+  document.addEventListener('visibilitychange', onVisibilityChange);
+
+  return () => {
+    window.clearInterval(intervalId);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+  };
+}, [mode, roomId]);
 
   // ==========================================
   // AZURE INTEGRATION: RECEIVER LOGIC
   // ==========================================
   const fetchRoomMetadata = async (code: string) => {
-    setStatus('loading');
-    setErrorMsg(null);
-    try {
-      // CW1 Workflow: GET request to Azure Logic Apps/API Management
-      // This retrieves the Cosmos DB metadata and Blob Storage URLs
-      const response = await fetch(`${API_BASE_URL}/room/${code}`);
-      
-      if (!response.ok) throw new Error('Room not found or expired');
-      
-      const data = await response.json();
-      setReceivedFiles(data.files); // Assuming Azure returns { files: [{name, blobUrl, mimeType}] }
-      setStatus('success');
-    } catch (err: any) {
-      console.error(err);
-      setStatus('error');
-      setErrorMsg(err.message || 'Failed to fetch files');
+  setStatus('loading');
+  setErrorMsg(null);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/room/${code}`, {
+      // Always hit the server; never serve stale Cosmos data from the cache.
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, 'Room not found or expired'));
     }
-  };
+
+    const data = (await response.json()) as RoomResponse;
+
+    // Map server shape → local FileMeta. Names already align, but the
+    // explicit map keeps the contract obvious if either side changes.
+    setReceivedFiles(
+      data.files.map((f) => ({
+        id: f.id,
+        name: f.name,
+        sizeBytes: f.sizeBytes,
+        mimeType: f.mimeType,
+        blobUrl: f.blobUrl, // already carries a 1-hour read SAS
+        uploadedAt: f.uploadedAt,
+      })),
+    );
+    setStatus('success');
+  } catch (err) {
+    console.error('[fetchRoomMetadata]', err);
+    setStatus('error');
+    setErrorMsg(err instanceof Error ? err.message : 'Failed to fetch files');
+  }
+};
 
   // ==========================================
   // AZURE INTEGRATION: SENDER LOGIC (Valet Key Pattern)
   // ==========================================
   const handleUploadToAzure = async (files: FileList) => {
-    setStatus('loading');
-    setErrorMsg(null);
-    setProgress(0);
+  if (files.length === 0) return;
 
-    try {
-      const uploadedMeta: FileMeta[] = [];
+  setStatus('loading');
+  setErrorMsg(null);
+  setProgress(0);
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+  try {
+    const uploadedMeta: FileMeta[] = [];
 
-        // 1. Request SAS Token from our Next.js API
-        const sasResponse = await fetch(`${API_BASE_URL}/upload/generate-sas`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ roomId: roomId, fileName: file.name, mimeType: file.type })
-        });
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      // Some browsers/OS combos leave file.type empty (e.g. unknown extensions).
+      // Default to a generic binary type so the SAS contentType pin still works.
+      const mimeType = file.type || 'application/octet-stream';
 
-        if (!sasResponse.ok) {
-          const errBody = await sasResponse.json().catch(() => ({}));
-          console.error('[generate-sas] failed:', sasResponse.status, errBody);
-          throw new Error('Failed to generate secure upload token');
-        }
-        const { sasUrl, blobUrl } = await sasResponse.json();
-        console.log('[generate-sas] received sasUrl:', sasUrl, 'blobUrl:', blobUrl);
+      // -- 1. Mint a write-only SAS URL via our Next.js route ---------------
+      const sasResponse = await fetch(`${API_BASE_URL}/upload/generate-sas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId,
+          fileName: file.name,
+          mimeType,
+        }),
+      });
 
-        // 2. Upload heavy file DIRECTLY to Azure Blob Storage using PUT (Bypasses server limits)
-        const uploadResponse = await fetch(sasUrl, {
-          method: 'PUT',
-          body: file,
-          headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': file.type }
-        });
+      if (!sasResponse.ok) {
+        throw new Error(
+          await readApiError(sasResponse, 'Failed to generate secure upload token'),
+        );
+      }
+      const { sasUrl, blobUrl } = (await sasResponse.json()) as SasResponse;
 
-        if (!uploadResponse.ok) throw new Error(`Azure Blob Storage rejected the file: ${file.name}`);
+      // -- 2. PUT the bytes directly to Azure Blob Storage ------------------
+      // Content-Type MUST match the value pinned in the SAS — Storage will
+      // reject the PUT with 403 otherwise.
+      const putResponse = await fetch(sasUrl, {
+        method: 'PUT',
+        body: file,
+        headers: {
+          'x-ms-blob-type': 'BlockBlob',
+          'Content-Type': mimeType,
+        },
+      });
 
-        // 3. Notify Cosmos DB that upload is complete
-        const finalizeResponse = await fetch(`${API_BASE_URL}/upload/finalise`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            roomId: roomId,
-            fileName: file.name,
-            blobUrl: blobUrl, // The clean URL without the SAS signature
-            sizeBytes: file.size,
-            mimeType: file.type
-          })
-        });
-
-        if (!finalizeResponse.ok) throw new Error('Failed to save file metadata to database');
-
-        // Update progress and local state
-        setProgress(Math.round(((i + 1) / files.length) * 100));
-        uploadedMeta.push({ name: file.name, sizeBytes: file.size, mimeType: file.type, blobUrl: blobUrl });
+      if (!putResponse.ok) {
+        throw new Error(
+          `Azure Blob Storage rejected "${file.name}" (HTTP ${putResponse.status})`,
+        );
       }
 
-      setSentFiles(prev => [...prev, ...uploadedMeta]);
-      setStatus('success');
+      // -- 3. Register the upload in Cosmos DB ------------------------------
+      const finaliseResponse = await fetch(`${API_BASE_URL}/upload/finalise`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId,
+          fileName: file.name,
+          blobUrl,           // clean URL, no SAS — server validates the prefix
+          sizeBytes: file.size,
+          mimeType,
+        }),
+      });
 
-    } catch (err: any) {
-      console.error(err);
-      setStatus('error');
-      setErrorMsg(err.message || 'Upload failed.');
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (!finaliseResponse.ok) {
+        throw new Error(
+          await readApiError(finaliseResponse, 'Failed to save file metadata'),
+        );
+      }
+      const finalised = (await finaliseResponse.json()) as FinaliseResponse;
+
+      uploadedMeta.push({
+        id: finalised.id,
+        name: file.name,
+        sizeBytes: file.size,
+        mimeType,
+        blobUrl: URL.createObjectURL(file), //blobUrl, 
+        uploadedAt: finalised.uploadedAt,
+      });
+
+      setProgress(Math.round(((i + 1) / files.length) * 100));
     }
-  };
+
+    setSentFiles((prev) => [...prev, ...uploadedMeta]);
+    setStatus('success');
+  } catch (err) {
+    console.error('[handleUploadToAzure]', err);
+    setStatus('error');
+    setErrorMsg(err instanceof Error ? err.message : 'Upload failed.');
+  } finally {
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+};
 
   const reset = () => {
     setMode('home');
@@ -342,17 +483,11 @@ export default function BridgeDrop() {
                 
                 <div className="grid grid-cols-1 gap-4">
                   {(mode === 'sender' ? sentFiles : receivedFiles).map((file, idx) => (
-                    <div key={idx} className="bg-white/60 border border-blue-500/20 rounded-[1.5rem] p-4 flex flex-col gap-3 shadow-sm">
-                      <div className="flex items-center gap-3">
-                        <div className="bg-blue-100 p-2 rounded-full text-blue-600 shrink-0"><Check size={16} /></div>
-                        <span className="text-sm text-slate-700 font-semibold truncate">{file.name}</span>
-                      </div>
-                      {mode === 'receiver' && file.blobUrl && (
-                        <a href={file.blobUrl} target="_blank" rel="noreferrer" className="mt-2 bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl text-center hover:bg-blue-600 transition-colors">
-                          Download from Azure
-                        </a>
-                      )}
-                    </div>
+                    <FileCard
+                      key={file.id ?? `${file.name}-${idx}`}
+                      file={file}
+                      mode={mode === 'sender' ? 'sender' : 'receiver'}
+                    />
                   ))}
                 </div>
               </div>

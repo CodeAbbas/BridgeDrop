@@ -1,53 +1,37 @@
-/**
- * POST /api/upload/generate-sas
- *
- * Implements the Valet Key Pattern for secure, direct-to-Azure-Blob uploads.
- *
- * Flow:
- *   1. Frontend sends file metadata (roomId, fileName, mimeType).
- *   2. This handler generates a short-lived, write-only Blob SAS token scoped
- *      to a single blob path.
- *   3. Frontend receives { sasUrl, blobName } and PUTs the file directly to
- *      Azure Blob Storage — the binary data never passes through this server.
- *   4. After the PUT succeeds, the frontend calls POST /api/upload/finalize
- *      (future route) to register the file in Cosmos DB room-metadata.
- *
- * Security properties of the generated SAS:
- *   - Blob-scoped (not container-scoped) — one token per file.
- *   - Permissions: cw (Create + Write only) — no read, no delete, no list.
- *   - HTTPS-only.
- *   - Content-Type locked to the requested mimeType — mismatched PUTs are rejected.
- *   - 15-minute expiry window with a 1-minute clock-skew buffer.
- *   - Blob name includes a UUID, so URLs are unguessable.
- *
- * Required environment variables:
- *   AZURE_STORAGE_ACCOUNT_NAME   e.g. bridgedroprodxxxxxx
- *   AZURE_STORAGE_ACCOUNT_KEY    Primary or secondary access key
- *   AZURE_STORAGE_CONTAINER_NAME bridgedrop-media  (defaults to this value)
- */
-
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  StorageSharedKeyCredential,
+  BlobServiceClient,
   BlobSASPermissions,
-  BlobSASSignatureValues,
-  generateBlobSASQueryParameters,
   SASProtocol,
+  type BlockBlobClient,
 } from '@azure/storage-blob';
 
-// ---------------------------------------------------------------------------
-// Credential — module-level singleton.
-// StorageSharedKeyCredential is stateless and safe to share across requests.
-// ---------------------------------------------------------------------------
-const accountName = process.env.AZURE_STORAGE_ACCOUNT_NAME!;
-const accountKey = process.env.AZURE_STORAGE_ACCOUNT_KEY!;
-const containerName =
-  process.env.AZURE_STORAGE_CONTAINER_NAME ?? 'bridgedrop-media';
+// The @azure/storage-blob SDK is not Edge-compatible — force Node.js runtime.
+export const runtime = 'nodejs';
+// SAS generation must run per-request; never cache this handler's response.
+export const dynamic = 'force-dynamic';
 
-const sharedKeyCredential = new StorageSharedKeyCredential(
-  accountName,
-  accountKey
-);
+// ---------------------------------------------------------------------------
+// Configuration — module-level singletons.
+// BlobServiceClient is thread-safe and intended to be reused across requests.
+// ---------------------------------------------------------------------------
+
+const CONTAINER_NAME = 'bridgedrop-media';
+const SAS_TTL_MS = 60 * 60 * 1000; 
+const CLOCK_SKEW_MS = 60 * 1000; 
+const MAX_FILENAME_LENGTH = 200;
+const ROOM_ID_PATTERN = /^[A-Za-z0-9]{6}$/;
+
+const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
+
+if (!connectionString) {
+  throw new Error(
+    'AZURE_STORAGE_CONNECTION_STRING is not set. Configure it in your environment or App Service application settings.',
+  );
+}
+
+const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
+const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,118 +43,113 @@ interface SasRequestBody {
   mimeType: string;
 }
 
-interface SasResponseBody {
-  /** Complete URL the browser PUTs to. Includes the SAS token as a query string. */
+interface SasSuccessResponse {
+  /** Full URL the browser PUTs to. The SAS token is appended as a query string. */
   sasUrl: string;
-  /**
-   * Permanent clean URL (no SAS token) stored in Cosmos DB and used for downloads.
-   * Blob path relative to the container (e.g. "ABC123/uuid-photo.jpg").
-   */
+  /** Clean, signature-free URL to persist in Cosmos DB and use for downloads. */
   blobUrl: string;
-  /** Blob path relative to the container — kept for server-side use. */
+  /** Blob path relative to the container (e.g. "ABC123/uuid-photo.jpg"). */
   blobName: string;
-  /** ISO 8601 expiry — the frontend can show a countdown or retry prompt. */
+  /** ISO 8601 expiry — useful for client-side countdowns / retry prompts. */
   expiresAt: string;
+}
+
+interface ErrorResponse {
+  error: string;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Strips path separators and limits length to prevent directory traversal
- * and overly long blob names.
- */
 function sanitiseFileName(raw: string): string {
-  const stripped = raw.replace(/[/\\]/g, '').trim();
-  return stripped.slice(0, 200) || 'file';
+  // eslint-disable-next-line no-control-regex
+  const stripped = raw.replace(/[/\\\x00-\x1f]/g, '').trim();
+  return stripped.slice(0, MAX_FILENAME_LENGTH) || 'file';
+}
+
+/**
+ * Validates the parsed request body. Returns the typed body on success or
+ * an error message on failure.
+ */
+function validateBody(
+  body: Partial<SasRequestBody>,
+): { ok: true; data: SasRequestBody } | { ok: false; error: string } {
+  const { roomId, fileName, mimeType } = body;
+
+  if (typeof roomId !== 'string' || !ROOM_ID_PATTERN.test(roomId)) {
+    return { ok: false, error: 'roomId must be a 6-character alphanumeric string.' };
+  }
+  if (typeof fileName !== 'string' || fileName.trim().length === 0) {
+    return { ok: false, error: 'fileName is required and must be a non-empty string.' };
+  }
+  if (typeof mimeType !== 'string' || mimeType.trim().length === 0) {
+    return { ok: false, error: 'mimeType is required and must be a non-empty string.' };
+  }
+  return { ok: true, data: { roomId, fileName, mimeType } };
 }
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function POST(req: NextRequest) {
-  let body: Partial<SasRequestBody>;
-
+export async function POST(
+  req: NextRequest,
+): Promise<NextResponse<SasSuccessResponse | ErrorResponse>> {
+  // --- 1. Parse JSON ------------------------------------------------------
+  let rawBody: unknown;
   try {
-    body = (await req.json()) as Partial<SasRequestBody>;
+    rawBody = await req.json();
   } catch {
     return NextResponse.json(
       { error: 'Request body must be valid JSON.' },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
-  const { roomId, fileName, mimeType } = body;
+  // --- 2. Validate shape --------------------------------------------------
+  const validation = validateBody(rawBody as Partial<SasRequestBody>);
+  if (!validation.ok) {
+    return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+  const { roomId, fileName, mimeType } = validation.data;
 
-  if (!roomId || !/^[A-Za-z0-9]{6}$/.test(roomId)) {
-    return NextResponse.json(
-      { error: 'roomId must be a 6-character alphanumeric string.' },
-      { status: 400 }
-    );
-  }
-  if (!fileName || typeof fileName !== 'string') {
-    return NextResponse.json({ error: 'fileName is required.' }, { status: 400 });
-  }
-  if (!mimeType || typeof mimeType !== 'string') {
-    return NextResponse.json({ error: 'mimeType is required.' }, { status: 400 });
-  }
-
-  // Blob name: "<ROOMID>/<uuid>-<safe-filename>"
-  // Scoping by roomId groups room files together in the container.
-  // The UUID makes the URL unguessable and prevents collisions.
+  // --- 3. Build collision-resistant blob name -----------------------------
   const safeFileName = sanitiseFileName(fileName);
   const blobName = `${roomId.toUpperCase()}/${crypto.randomUUID()}-${safeFileName}`;
 
-  const startsOn = new Date(Date.now() - 60_000);       // 1-min clock-skew buffer
-  const expiresOn = new Date(Date.now() + 15 * 60_000); // 15-min upload window
-
-  const sasValues: BlobSASSignatureValues = {
-    containerName,
-    blobName,
-    // c = Create new blobs, w = Write blob data.
-    // No r (read), d (delete), or l (list) — write-only valet key.
-    permissions: BlobSASPermissions.parse('cw'),
-    startsOn,
-    expiresOn,
-    protocol: SASProtocol.Https,
-    // Locking contentType means the storage service rejects any PUT whose
-    // Content-Type header does not exactly match — prevents MIME-type confusion.
-    contentType: mimeType,
-  };
+  // --- 4. Generate SAS ----------------------------------------------------
+  const startsOn = new Date(Date.now() - CLOCK_SKEW_MS);
+  const expiresOn = new Date(Date.now() + SAS_TTL_MS);
 
   try {
-    console.log(`[generate-sas] Generating SAS for roomId=${roomId} blobName=${blobName}`);
+    const blockBlobClient: BlockBlobClient = containerClient.getBlockBlobClient(blobName);
+    const sasUrl = await blockBlobClient.generateSasUrl({
+      permissions: BlobSASPermissions.parse('cw'),
+      startsOn,
+      expiresOn,
+      protocol: SASProtocol.Https,
+      contentType: mimeType,
+    });
+    const blobUrl = blockBlobClient.url;
 
-    const sasToken = generateBlobSASQueryParameters(
-      sasValues,
-      sharedKeyCredential
-    ).toString();
-
-    // Encode each path segment separately so the '/' virtual-directory separator
-    // is preserved while special chars in file names are safely encoded.
-    const encodedBlobPath = blobName.split('/').map(encodeURIComponent).join('/');
-    const blobBaseUrl = `https://${accountName}.blob.core.windows.net/${containerName}/${encodedBlobPath}`;
-    const sasUrl = `${blobBaseUrl}?${sasToken}`;
-
-    console.log(`[generate-sas] sasUrl generated (first 80 chars): ${sasUrl.slice(0, 80)}...`);
-    console.log(`[generate-sas] clean blobUrl: ${blobBaseUrl}`);
-
-    const responseBody: SasResponseBody = {
+    const responseBody: SasSuccessResponse = {
       sasUrl,
-      blobUrl: blobBaseUrl,
+      blobUrl,
       blobName,
       expiresAt: expiresOn.toISOString(),
     };
 
-    // 201 Created — a new upload credential has been provisioned.
     return NextResponse.json(responseBody, { status: 201 });
   } catch (err) {
-    console.error('[generate-sas] Failed to generate SAS token:', err);
+    console.error('[generate-sas] Failed to generate SAS token:', {
+      roomId,
+      blobName,
+      message: err instanceof Error ? err.message : String(err),
+    });
     return NextResponse.json(
       { error: 'Failed to generate upload token.' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
