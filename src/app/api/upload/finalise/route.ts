@@ -6,60 +6,28 @@
  *
  * Document model — one document per file:
  *   {
- *     id:         <uuid>,             // Cosmos document id
+ *     id:         <uuid>,
  *     roomId:     "ABC123",            // partition key
- *     name:       "photo.jpg",         // original filename
+ *     name:       "photo.jpg",
  *     blobUrl:    "https://<acct>.blob.core.windows.net/bridgedrop-media/ABC123/<uuid>-photo.jpg",
  *     sizeBytes:  1048576,
  *     mimeType:   "image/jpeg",
  *     uploadedAt: "2026-05-04T12:34:56.789Z"
  *   }
- *
- * Why one-doc-per-file (not one-doc-per-room with a files[] array):
- *   - Inserts are atomic. Concurrent uploads in the same room can't lose
- *     each other through read-modify-write races.
- *   - Each file gets its own TTL if needed.
- *   - Queries by roomId are still single-partition (efficient).
- *
- * Required environment variables:
- *   AZURE_COSMOS_ENDPOINT  e.g. https://bridgedrop-prod-cosmos.documents.azure.com:443/
- *   AZURE_COSMOS_KEY       Primary master key from the Azure Portal
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { CosmosClient, type Container } from '@azure/cosmos';
+import { getCosmosContainer, STORAGE_CONTAINER_NAME } from '@/lib/azure';
 
-// @azure/cosmos uses Node crypto — not Edge-compatible.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // ---------------------------------------------------------------------------
-// Configuration — module-level singletons for connection pooling.
+// Configuration
 // ---------------------------------------------------------------------------
 
-const DATABASE_ID = 'bridgedrop-db';
-const CONTAINER_ID = 'room-metadata';
-const STORAGE_CONTAINER_NAME = 'bridgedrop-media';
 const ROOM_ID_PATTERN = /^[A-Za-z0-9]{6}$/;
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
-
-const cosmosEndpoint = process.env.AZURE_COSMOS_ENDPOINT;
-const cosmosKey = process.env.AZURE_COSMOS_KEY;
-
-if (!cosmosEndpoint || !cosmosKey) {
-  // Fail fast on cold start so misconfiguration shows up in boot logs.
-  throw new Error(
-    'AZURE_COSMOS_ENDPOINT and AZURE_COSMOS_KEY must be set in the environment.',
-  );
-}
-
-const cosmosClient = new CosmosClient({
-  endpoint: cosmosEndpoint,
-  key: cosmosKey,
-});
-const container: Container = cosmosClient
-  .database(DATABASE_ID)
-  .container(CONTAINER_ID);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,7 +41,6 @@ interface FinaliseRequestBody {
   mimeType: string;
 }
 
-/** Shape persisted in Cosmos — exported so the read endpoint can share it. */
 export interface FileDocument {
   id: string;
   roomId: string;
@@ -107,7 +74,6 @@ function isValidBlobUrl(rawUrl: string, roomId: string): boolean {
   if (url.protocol !== 'https:') return false;
   if (!url.hostname.endsWith('.blob.core.windows.net')) return false;
 
-  // Path must be /<container>/<ROOMID>/<rest>
   const expectedPrefix = `/${STORAGE_CONTAINER_NAME}/${roomId.toUpperCase()}/`;
   if (!url.pathname.startsWith(expectedPrefix)) return false;
 
@@ -199,10 +165,11 @@ export async function POST(
 
   // --- 4. Insert into Cosmos ---------------------------------------------
   try {
+    // Lazy client init.
+    const container = getCosmosContainer();
     const { resource, statusCode } = await container.items.create<FileDocument>(doc);
 
     if (!resource) {
-      // Cosmos succeeded but returned no body — treat as a server error.
       console.error('[finalise] Cosmos returned no resource; statusCode=', statusCode);
       return NextResponse.json(
         { error: 'Failed to persist file metadata.' },
@@ -210,8 +177,6 @@ export async function POST(
       );
     }
 
-    // Strip Cosmos system fields (_rid, _self, _etag, _attachments, _ts)
-    // so the response matches the FileDocument contract exactly.
     const cleaned: FileDocument = {
       id: resource.id,
       roomId: resource.roomId,
@@ -224,8 +189,6 @@ export async function POST(
 
     return NextResponse.json(cleaned, { status: 200 });
   } catch (err) {
-    // Cosmos errors carry a numeric `code`. 409 = duplicate id (extremely
-    // unlikely with UUIDv4 but possible). Other codes = internal failure.
     const code = (err as { code?: number }).code;
     console.error('[finalise] Cosmos write failed:', {
       roomId,

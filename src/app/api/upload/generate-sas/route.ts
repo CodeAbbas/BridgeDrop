@@ -1,10 +1,34 @@
+/**
+ * POST /api/upload/generate-sas
+ *
+ * Implements the Valet Key Pattern for BridgeDrop's direct-to-Blob uploads.
+ *
+ * Flow:
+ *   1. Frontend sends file metadata (roomId, fileName, mimeType).
+ *   2. This handler mints a short-lived, write-only Service SAS URL scoped
+ *      to a single blob path inside the `bridgedrop-media` container.
+ *   3. Frontend PUTs the file directly to Azure Blob Storage using `sasUrl`
+ *      — bytes never touch this Next.js server.
+ *   4. Frontend later calls /api/upload/finalise with `blobUrl` to register
+ *      the upload in Cosmos DB room metadata.
+ *
+ * Security properties of the generated SAS:
+ *   - Blob-scoped, not container-scoped (one token per file).
+ *   - Permissions: cw (Create + Write only) — no read, delete, or list.
+ *   - HTTPS-only.
+ *   - Content-Type pinned to the declared mimeType.
+ *   - 1-hour expiry with a small clock-skew buffer on the start time.
+ *   - Blob name carries a UUID, so URLs are unguessable.
+ *   - File name sanitised to block path-traversal attempts.
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  BlobServiceClient,
   BlobSASPermissions,
   SASProtocol,
   type BlockBlobClient,
 } from '@azure/storage-blob';
+import { getStorageContainerClient } from '@/lib/azure';
 
 // The @azure/storage-blob SDK is not Edge-compatible — force Node.js runtime.
 export const runtime = 'nodejs';
@@ -12,26 +36,13 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // ---------------------------------------------------------------------------
-// Configuration — module-level singletons.
-// BlobServiceClient is thread-safe and intended to be reused across requests.
+// Configuration
 // ---------------------------------------------------------------------------
 
-const CONTAINER_NAME = 'bridgedrop-media';
-const SAS_TTL_MS = 60 * 60 * 1000; 
-const CLOCK_SKEW_MS = 60 * 1000; 
+const SAS_TTL_MS = 60 * 60 * 1000;      // 1 hour
+const CLOCK_SKEW_MS = 60 * 1000;        // 1-minute backdate on startsOn
 const MAX_FILENAME_LENGTH = 200;
 const ROOM_ID_PATTERN = /^[A-Za-z0-9]{6}$/;
-
-const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
-
-if (!connectionString) {
-  throw new Error(
-    'AZURE_STORAGE_CONNECTION_STRING is not set. Configure it in your environment or App Service application settings.',
-  );
-}
-
-const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
-const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,13 +55,9 @@ interface SasRequestBody {
 }
 
 interface SasSuccessResponse {
-  /** Full URL the browser PUTs to. The SAS token is appended as a query string. */
   sasUrl: string;
-  /** Clean, signature-free URL to persist in Cosmos DB and use for downloads. */
   blobUrl: string;
-  /** Blob path relative to the container (e.g. "ABC123/uuid-photo.jpg"). */
   blobName: string;
-  /** ISO 8601 expiry — useful for client-side countdowns / retry prompts. */
   expiresAt: string;
 }
 
@@ -68,10 +75,6 @@ function sanitiseFileName(raw: string): string {
   return stripped.slice(0, MAX_FILENAME_LENGTH) || 'file';
 }
 
-/**
- * Validates the parsed request body. Returns the typed body on success or
- * an error message on failure.
- */
 function validateBody(
   body: Partial<SasRequestBody>,
 ): { ok: true; data: SasRequestBody } | { ok: false; error: string } {
@@ -123,7 +126,12 @@ export async function POST(
   const expiresOn = new Date(Date.now() + SAS_TTL_MS);
 
   try {
+    // Lazy client init — env access happens here, not at module load.
+    const containerClient = getStorageContainerClient();
     const blockBlobClient: BlockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+    // 'cw' = Create + Write. Azure requires BOTH for a fresh-blob PUT;
+    // 'w' alone fails on first upload with AuthorizationPermissionMismatch.
     const sasUrl = await blockBlobClient.generateSasUrl({
       permissions: BlobSASPermissions.parse('cw'),
       startsOn,
@@ -131,6 +139,7 @@ export async function POST(
       protocol: SASProtocol.Https,
       contentType: mimeType,
     });
+
     const blobUrl = blockBlobClient.url;
 
     const responseBody: SasSuccessResponse = {
@@ -142,7 +151,7 @@ export async function POST(
 
     return NextResponse.json(responseBody, { status: 201 });
   } catch (err) {
-    console.error('[generate-sas] Failed to generate SAS token:', {
+    console.error('[generate-sas] Failed:', {
       roomId,
       blobName,
       message: err instanceof Error ? err.message : String(err),

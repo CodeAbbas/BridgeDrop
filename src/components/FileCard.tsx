@@ -1,28 +1,21 @@
 'use client';
 
 /**
- * FileCard — a glassmorphic file tile with a type-aware preview area
- * and a download action that fits BridgeDrop's visual language.
+ * FileCard — glassmorphic file tile with type-aware previews and full CRUD UI.
  *
- * Preview behaviour:
- *   - image/* → <img> rendered directly from the SAS-signed blobUrl,
- *               with a graceful fallback to a tinted icon if it fails to load.
- *   - video/* → native <video controls preload="metadata"> so only the first
- *               frame and metadata download until the user presses play.
- *   - audio/* → tinted panel with a music icon and native <audio controls>.
- *   - pdf / text / archive / document / other → gradient panel with a coloured
- *               category icon. No live rendering — keeps the UI fast and
- *               avoids cross-origin iframe pitfalls.
+ * Sender mode gets a 3-dot kebab menu in the top-right of the preview area
+ * with two actions:
+ *   - Rename: swaps the filename text for an inline input. Enter saves,
+ *             Escape cancels. Auto-selects the part before the extension.
+ *   - Delete: opens a two-step confirmation inside the dropdown — first
+ *             click reveals a red "Yes, delete" button.
  *
- * Sender vs receiver:
- *   - Sender's blobUrl is the clean (un-SAS-signed) URL and the container is
- *     private, so previews would 403. Sender gets the icon view plus a "Sent"
- *     badge in place of the download button.
- *   - Receiver's blobUrl already carries a 1-hour read SAS (minted by
- *     /api/room/[roomId]), so previews work directly.
+ * The component is presentational: rename/delete network calls live in the
+ * parent. We invoke `onRename(id, newName)` / `onDelete(id)` and let the
+ * parent handle optimistic state updates, error recovery, and revert.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Download,
@@ -30,7 +23,11 @@ import {
   FileArchive,
   FileText,
   Image as ImageIcon,
+  Loader2,
+  MoreVertical,
   Music,
+  Pencil,
+  Trash2,
   Video as VideoIcon,
   type LucideIcon,
 } from 'lucide-react';
@@ -39,10 +36,6 @@ import {
 // Public types
 // ---------------------------------------------------------------------------
 
-/**
- * Structurally compatible with BridgeDrop's existing FileMeta —
- * any object with these fields can be passed without extra mapping.
- */
 export interface FileCardData {
   id?: string;
   name: string;
@@ -54,6 +47,16 @@ export interface FileCardData {
 interface FileCardProps {
   file: FileCardData;
   mode: 'sender' | 'receiver';
+  /**
+   * Called when the user submits a rename. Should resolve once the rename is
+   * persisted (or rejected). Throwing/rejecting will revert the optimistic
+   * update in the parent.
+   */
+  onRename?: (id: string, newName: string) => Promise<void> | void;
+  /**
+   * Called when the user confirms a delete. Same async contract as onRename.
+   */
+  onDelete?: (id: string) => Promise<void> | void;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,21 +74,14 @@ type FileCategory =
   | 'other';
 
 const EXT_MAP: Record<string, FileCategory> = {
-  // image
   jpg: 'image', jpeg: 'image', png: 'image', gif: 'image',
   webp: 'image', svg: 'image', bmp: 'image', heic: 'image', avif: 'image',
-  // video
   mp4: 'video', webm: 'video', mov: 'video', mkv: 'video', avi: 'video', m4v: 'video',
-  // audio
   mp3: 'audio', wav: 'audio', ogg: 'audio', flac: 'audio', m4a: 'audio', aac: 'audio',
-  // pdf
   pdf: 'pdf',
-  // text
   txt: 'text', md: 'text', json: 'text', xml: 'text', csv: 'text',
   log: 'text', yml: 'text', yaml: 'text', html: 'text', css: 'text', js: 'text', ts: 'text',
-  // archive
   zip: 'archive', rar: 'archive', '7z': 'archive', tar: 'archive', gz: 'archive',
-  // document
   doc: 'document', docx: 'document', xls: 'document', xlsx: 'document',
   ppt: 'document', pptx: 'document', odt: 'document', ods: 'document',
 };
@@ -119,8 +115,6 @@ function getFileCategory(mimeType: string, fileName: string): FileCategory {
     return 'document';
   }
 
-  // Fallback: extension sniffing for files served with a generic
-  // application/octet-stream MIME (common for unknown extensions).
   const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
   return EXT_MAP[ext] ?? 'other';
 }
@@ -149,7 +143,6 @@ const CATEGORY_LABEL: Record<FileCategory, string> = {
 };
 
 function prettyMimeLabel(mimeType: string, category: FileCategory): string {
-  // Try to surface the subtype: "image/jpeg" → "JPEG Image".
   const subtype = mimeType.split('/')[1]?.split(';')[0]?.toUpperCase();
   if (subtype && /^[A-Z0-9]{1,6}$/.test(subtype)) {
     return `${subtype} ${CATEGORY_LABEL[category]}`;
@@ -163,11 +156,8 @@ function prettyMimeLabel(mimeType: string, category: FileCategory): string {
 
 interface CategoryStyle {
   icon: LucideIcon;
-  /** Outer gradient on the preview panel. */
   bg: string;
-  /** Inner pill that wraps the icon glyph. */
   iconBg: string;
-  /** Icon stroke colour. */
   iconColor: string;
 }
 
@@ -247,8 +237,6 @@ function PreviewArea({
   category: FileCategory;
   canPreview: boolean;
 }) {
-  // `imgFailed` flips us to the icon fallback if a SAS expires mid-session
-  // or the URL is otherwise unreachable — avoids the broken-image glyph.
   const [imgFailed, setImgFailed] = useState(false);
 
   if (canPreview && file.blobUrl) {
@@ -298,38 +286,332 @@ function PreviewArea({
     }
   }
 
-  // Sender side, non-previewable types, or image fallback — show the icon panel.
   return <IconPreview category={category} />;
+}
+
+// ---------------------------------------------------------------------------
+// Kebab menu — three states: closed, open, confirming-delete
+// ---------------------------------------------------------------------------
+
+interface KebabMenuProps {
+  onRenameStart: () => void;
+  onDeleteConfirm: () => Promise<void> | void;
+}
+
+function KebabMenu({ onRenameStart, onDeleteConfirm }: KebabMenuProps) {
+  const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  // Click outside / Escape closes the menu and resets the confirm state.
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        menuRef.current?.contains(target) ||
+        buttonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setOpen(false);
+      setConfirming(false);
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        setConfirming(false);
+      }
+    };
+    // Defer one tick so the click that opened the menu doesn't immediately close it.
+    const timer = window.setTimeout(() => {
+      document.addEventListener('mousedown', handleClick);
+    }, 0);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [open]);
+
+  const handleConfirmDelete = async () => {
+    setDeleting(true);
+    try {
+      await onDeleteConfirm();
+      // Component will be unmounted by the parent; no need to reset state.
+    } catch {
+      setDeleting(false);
+      setConfirming(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="absolute top-3 right-3 z-10">
+      <button
+        ref={buttonRef}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((v) => !v);
+          setConfirming(false);
+        }}
+        aria-label="File actions"
+        aria-expanded={open}
+        className="
+          w-9 h-9 rounded-full
+          bg-white/85 backdrop-blur-md
+          hover:bg-white shadow-md
+          border border-white/60
+          flex items-center justify-center
+          transition-all duration-150
+          active:scale-90
+        "
+      >
+        <MoreVertical size={16} className="text-slate-700" strokeWidth={2.5} />
+      </button>
+
+      {open && (
+        <div
+          ref={menuRef}
+          className="
+            absolute top-11 right-0 min-w-[170px]
+            bg-white/95 backdrop-blur-xl
+            border border-white/70
+            rounded-2xl shadow-xl
+            overflow-hidden
+            animate-in fade-in slide-in-from-top-2 duration-150
+          "
+        >
+          {confirming ? (
+            <div className="p-1">
+              <p className="px-3 py-2 text-xs font-semibold text-slate-600">
+                Delete this file?
+              </p>
+              <button
+                onClick={handleConfirmDelete}
+                disabled={deleting}
+                className="
+                  w-full px-3 py-2 rounded-xl
+                  text-sm font-bold text-red-600
+                  hover:bg-red-50
+                  flex items-center gap-2
+                  transition-colors disabled:opacity-60
+                "
+              >
+                {deleting ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Trash2 size={14} strokeWidth={2.5} />
+                )}
+                <span>{deleting ? 'Deleting…' : 'Yes, delete'}</span>
+              </button>
+              <button
+                onClick={() => setConfirming(false)}
+                disabled={deleting}
+                className="
+                  w-full px-3 py-2 rounded-xl
+                  text-sm font-medium text-slate-600
+                  hover:bg-slate-100
+                  text-left
+                  transition-colors
+                "
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="p-1">
+              <button
+                onClick={() => {
+                  setOpen(false);
+                  onRenameStart();
+                }}
+                className="
+                  w-full px-3 py-2 rounded-xl
+                  text-sm font-medium text-slate-700
+                  hover:bg-slate-100
+                  flex items-center gap-2
+                  transition-colors
+                "
+              >
+                <Pencil size={14} strokeWidth={2.5} />
+                <span>Rename</span>
+              </button>
+              <button
+                onClick={() => setConfirming(true)}
+                className="
+                  w-full px-3 py-2 rounded-xl
+                  text-sm font-medium text-red-600
+                  hover:bg-red-50
+                  flex items-center gap-2
+                  transition-colors
+                "
+              >
+                <Trash2 size={14} strokeWidth={2.5} />
+                <span>Delete</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Public component
 // ---------------------------------------------------------------------------
 
-export function FileCard({ file, mode }: FileCardProps) {
+export function FileCard({ file, mode, onRename, onDelete }: FileCardProps) {
   const category = getFileCategory(file.mimeType, file.name);
-  const canPreview = Boolean(file.blobUrl); //mode === 'receiver' && Boolean(file.blobUrl);
+  const canPreview = Boolean(file.blobUrl);
+  //const canPreview = mode === 'receiver' && Boolean(file.blobUrl);
   const sizeLabel = prettyFileSize(file.sizeBytes);
   const typeLabel = prettyMimeLabel(file.mimeType, category);
 
+  // Only sender mode + a settled file (has server-assigned id) + handlers
+  // present unlocks the kebab menu.
+  const canModify =
+    mode === 'sender' && Boolean(file.id) && Boolean(onRename) && Boolean(onDelete);
+
+  // --- Rename state ------------------------------------------------------
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(file.name);
+  const [renameSaving, setRenameSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // When entering rename mode, focus and select the basename (before extension)
+  // — Finder/Explorer convention so the user can immediately type a new name
+  // without overwriting the extension.
+  useEffect(() => {
+    if (!isRenaming || !inputRef.current) return;
+    const input = inputRef.current;
+    input.focus();
+    const dot = input.value.lastIndexOf('.');
+    if (dot > 0) {
+      input.setSelectionRange(0, dot);
+    } else {
+      input.select();
+    }
+  }, [isRenaming]);
+
+  const handleRenameStart = () => {
+    setRenameValue(file.name);
+    setIsRenaming(true);
+  };
+
+  const handleRenameCancel = () => {
+    setIsRenaming(false);
+    setRenameValue(file.name);
+  };
+
+  const handleRenameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === file.name || !onRename || !file.id) {
+      handleRenameCancel();
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      await onRename(file.id, trimmed);
+      setIsRenaming(false);
+    } catch {
+      // Parent reverts optimistic state; we just exit the input.
+      setIsRenaming(false);
+    } finally {
+      setRenameSaving(false);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!onDelete || !file.id) return;
+    await onDelete(file.id);
+  };
+
   return (
-    <div className="group bg-white/60 border border-white/60 rounded-[1.5rem] overflow-hidden shadow-sm hover:shadow-lg hover:border-white/80 transition-all duration-300">
-      <PreviewArea file={file} category={category} canPreview={canPreview} />
+    <div className="group relative bg-white/60 border border-white/60 rounded-[1.5rem] overflow-hidden shadow-sm hover:shadow-lg hover:border-white/80 transition-all duration-300">
+      <div className="relative">
+        <PreviewArea file={file} category={category} canPreview={canPreview} />
+        {canModify && !isRenaming && (
+          <KebabMenu
+            onRenameStart={handleRenameStart}
+            onDeleteConfirm={handleDeleteConfirm}
+          />
+        )}
+      </div>
 
       <div className="p-4 space-y-3">
         <div className="space-y-1 min-w-0">
-          <p
-            className="text-sm font-semibold text-slate-800 truncate"
-            title={file.name}
-          >
-            {file.name}
-          </p>
-          <p className="text-xs text-slate-500 font-medium tabular-nums">
-            {sizeLabel} · {typeLabel}
-          </p>
+          {isRenaming ? (
+            <form onSubmit={handleRenameSubmit} className="space-y-2">
+              <input
+                ref={inputRef}
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    handleRenameCancel();
+                  }
+                }}
+                disabled={renameSaving}
+                maxLength={200}
+                className="
+                  w-full text-sm font-semibold text-slate-800
+                  bg-white/90
+                  border border-blue-400 focus:border-blue-500
+                  rounded-lg px-2.5 py-1.5
+                  focus:outline-none focus:ring-2 focus:ring-blue-400/40
+                  disabled:opacity-60
+                "
+              />
+              <div className="flex items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={renameSaving || renameValue.trim().length === 0}
+                  className="
+                    inline-flex items-center gap-1.5
+                    text-xs font-bold text-blue-600 hover:text-blue-700
+                    disabled:opacity-50 disabled:cursor-not-allowed
+                  "
+                >
+                  {renameSaving && <Loader2 size={12} className="animate-spin" />}
+                  <span>{renameSaving ? 'Saving…' : 'Save'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRenameCancel}
+                  disabled={renameSaving}
+                  className="text-xs font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <span className="ml-auto text-[10px] text-slate-400 font-medium">
+                  Enter to save · Esc to cancel
+                </span>
+              </div>
+            </form>
+          ) : (
+            <p
+              className="text-sm font-semibold text-slate-800 truncate"
+              title={file.name}
+            >
+              {file.name}
+            </p>
+          )}
+          {!isRenaming && (
+            <p className="text-xs text-slate-500 font-medium tabular-nums">
+              {sizeLabel} · {typeLabel}
+            </p>
+          )}
         </div>
 
-        {mode === 'receiver' && file.blobUrl ? (
+        {!isRenaming && (mode === 'receiver' && file.blobUrl ? (
           <a
             href={file.blobUrl}
             target="_blank"
@@ -367,7 +649,7 @@ export function FileCard({ file, mode }: FileCardProps) {
             <Check size={13} strokeWidth={3} />
             <span>Sent</span>
           </div>
-        )}
+        ))}
       </div>
     </div>
   );
