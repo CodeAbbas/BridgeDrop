@@ -7,7 +7,7 @@ import { FileCard } from './FileCard';
 import { getAppInsights } from '@/lib/appInsights';
 
 // AZURE API ENDPOINT (To be configured in Azure API Management)
-const API_BASE_URL = process.env.NEXT_PUBLIC_AZURE_API_URL || '/api';
+const API_BASE_URL = '/api';
 
 interface FileMeta {
   id?: string;
