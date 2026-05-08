@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Wifi, Smartphone, Tablet, Check, Loader2, Share2, ArrowRight, X, Copy, Files, RefreshCw, ScanLine } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { FileCard } from './FileCard';
+import { getAppInsights } from '@/lib/appInsights';
 
 // AZURE API ENDPOINT (To be configured in Azure API Management)
 const API_BASE_URL = process.env.NEXT_PUBLIC_AZURE_API_URL || '/api';
@@ -58,6 +59,7 @@ async function readApiError(res: Response, fallback: string): Promise<string> {
   return fallback;
 }
 export default function BridgeDrop() {
+  const appInsights = getAppInsights();
   const [mode, setMode] = useState<'home' | 'sender' | 'receiver' | 'receiver_input'>('home');
   const [roomId, setRoomId] = useState('');
 
@@ -226,10 +228,18 @@ export default function BridgeDrop() {
         })),
       );
       setStatus('success');
+
+      // Telemetry — only fires on the manual join, not on the polling refresh
+      appInsights.trackEvent('RoomJoined', {
+        roomId: code,
+        fileCount: data.files.length,
+      });
+
     } catch (err) {
       console.error('[fetchRoomMetadata]', err);
       setStatus('error');
       setErrorMsg(err instanceof Error ? err.message : 'Failed to fetch files');
+      appInsights.trackException(err as Error, { context: 'fetchRoomMetadata', roomId: code });
     }
   };
 
@@ -317,6 +327,14 @@ export default function BridgeDrop() {
           uploadedAt: finalised.uploadedAt,
         });
 
+        // Telemetry — fires once per successful file
+        appInsights.trackEvent('FileUploaded', {
+          roomId,
+          fileId: finalised.id,
+          sizeBytes: file.size,
+          mimeType,
+        });
+
         setProgress(Math.round(((i + 1) / files.length) * 100));
       }
 
@@ -326,6 +344,7 @@ export default function BridgeDrop() {
       console.error('[handleUploadToAzure]', err);
       setStatus('error');
       setErrorMsg(err instanceof Error ? err.message : 'Upload failed.');
+      appInsights.trackException(err as Error, { context: 'handleUploadToAzure', roomId });
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -358,6 +377,14 @@ export default function BridgeDrop() {
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Failed to rename file'));
       }
+
+      appInsights.trackEvent('FileRenamed', {
+        roomId,
+        fileId: id,
+        oldNameLength: previousName.length,
+        newNameLength: newName.length,
+      });
+
     } catch (err) {
       // Revert on failure.
       setSentFiles((prev) =>
@@ -366,6 +393,7 @@ export default function BridgeDrop() {
       setErrorMsg(err instanceof Error ? err.message : 'Rename failed');
       // Re-throw so the FileCard knows the rename was rejected and can exit
       // its saving state cleanly.
+      appInsights.trackException(err as Error, { context: 'handleRenameFile', fileId: id });
       throw err;
     }
   };
@@ -391,6 +419,14 @@ export default function BridgeDrop() {
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Failed to delete file'));
       }
+
+      appInsights.trackEvent('FileDeleted', {
+        roomId,
+        fileId: id,
+        sizeBytes: target.sizeBytes,
+        mimeType: target.mimeType,
+      });
+
     } catch (err) {
       // Revert on failure — re-insert the file in its original position.
       setSentFiles((prev) => {
@@ -400,6 +436,7 @@ export default function BridgeDrop() {
         return next;
       });
       setErrorMsg(err instanceof Error ? err.message : 'Delete failed');
+      appInsights.trackException(err as Error, { context: 'handleDeleteFile', fileId: id });
       throw err;
     }
   };
@@ -456,8 +493,10 @@ export default function BridgeDrop() {
                   <p className="text-slate-500 font-medium">Azure Serverless Transfer</p>
                 </div>
                 <button onClick={() => {
-                  setRoomId(Math.random().toString(36).substring(2, 8).toUpperCase());
+                  const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+                  setRoomId(newRoomId);
                   setMode('sender');
+                  appInsights.trackEvent('RoomCreated', { roomId: newRoomId });
                 }} className="w-full bg-white/60 hover:bg-white/80 border border-white/60 rounded-[1.5rem] p-5 flex items-center justify-between group transition-all shadow-sm">
                   <div className="flex items-center space-x-4">
                     <div className="bg-blue-100/50 p-3 rounded-full"><Smartphone className="w-6 h-6 text-blue-600" /></div>

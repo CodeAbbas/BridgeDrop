@@ -11,6 +11,8 @@
   "dependencies": {
     "@azure/cosmos": "^4.9.3",
     "@azure/storage-blob": "^12.31.0",
+    "@microsoft/applicationinsights-react-js": "^19.4.0",
+    "@microsoft/applicationinsights-web": "^3.4.1",
     "html5-qrcode": "^2.3.8",
     "lucide-react": "^0.561.0",
     "next": "^16.1.6",
