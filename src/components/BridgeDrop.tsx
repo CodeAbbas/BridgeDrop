@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Wifi, Smartphone, Tablet, Check, Loader2, Share2, ArrowRight, X, Copy, Files, RefreshCw, ScanLine } from 'lucide-react';
+import { Wifi, Smartphone, Tablet, Loader2, Share2, ArrowRight, X, Copy, Files, ScanLine } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { FileCard } from './FileCard';
 import { getAppInsights } from '@/lib/appInsights';
+import { uploadWithProgress } from '@/lib/uploadWithProgress';
 
 // AZURE API ENDPOINT (To be configured in Azure API Management)
 const API_BASE_URL = '/api';
@@ -16,6 +17,17 @@ interface FileMeta {
   mimeType: string;
   blobUrl?: string;
   uploadedAt?: string;
+}
+// Progress bar
+interface UploadState {
+  fileName: string;
+  /** 1-based, for display. */
+  fileNumber: number;
+  fileCount: number;
+  /** 0–100 for the file currently in flight. */
+  filePercent: number;
+  /** 0–100 across the whole batch, weighted by bytes. */
+  overallPercent: number;
 }
 // --- API response contracts (src/app/api/...) ---------------------
 interface SasResponse {
@@ -58,6 +70,66 @@ async function readApiError(res: Response, fallback: string): Promise<string> {
   }
   return fallback;
 }
+function UploadProgressPanel({
+  upload,
+  onCancel,
+}: {
+  upload: UploadState;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="mt-4 bg-white/50 border border-white/60 rounded-[1.5rem] p-4 shadow-sm"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-baseline justify-between gap-3 mb-1">
+        <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+          {upload.fileCount > 1
+            ? `Uploading ${upload.fileNumber} of ${upload.fileCount}`
+            : 'Uploading'}
+        </span>
+        <span className="text-sm font-bold text-slate-700 tabular-nums">
+          {upload.overallPercent}%
+        </span>
+      </div>
+
+      <p
+        className="text-sm font-semibold text-slate-800 truncate mb-3"
+        title={upload.fileName}
+      >
+        {upload.fileName}
+      </p>
+
+      <div
+        className="h-1.5 w-full bg-slate-200/70 rounded-full overflow-hidden"
+        role="progressbar"
+        aria-valuenow={upload.overallPercent}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Upload progress"
+      >
+        <div
+          className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-[width] duration-200 ease-out motion-reduce:transition-none"
+          style={{ width: `${upload.overallPercent}%` }}
+        />
+      </div>
+
+      <div className="flex items-center justify-between mt-3">
+        <span className="text-[11px] text-slate-500 font-medium tabular-nums">
+          {upload.fileCount > 1 ? `This file ${upload.filePercent}%` : '\u00A0'}
+        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs font-bold text-slate-500 hover:text-red-600 transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
 export default function BridgeDrop() {
   const appInsights = getAppInsights();
   const [mode, setMode] = useState<'home' | 'sender' | 'receiver' | 'receiver_input'>('home');
@@ -66,7 +138,8 @@ export default function BridgeDrop() {
   // Simplified HTTP States instead of WebRTC states
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
+  const [upload, setUpload] = useState<UploadState | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
 
   const [sentFiles, setSentFiles] = useState<FileMeta[]>([]);
   const [receivedFiles, setReceivedFiles] = useState<FileMeta[]>([]);
@@ -246,109 +319,142 @@ export default function BridgeDrop() {
   // ==========================================
   // AZURE INTEGRATION: SENDER LOGIC (Valet Key Pattern)
   // ==========================================
-  const handleUploadToAzure = async (files: FileList) => {
-    if (files.length === 0) return;
+  const handleUploadToAzure = async (fileList: FileList) => {
+  const files = Array.from(fileList);
+  if (files.length === 0) return;
 
-    setStatus('loading');
-    setErrorMsg(null);
-    setProgress(0);
+  const controller = new AbortController();
+  uploadAbortRef.current = controller;
 
-    try {
-      const uploadedMeta: FileMeta[] = [];
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  let bytesCompleted = 0;
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        // Some browsers/OS combos leave file.type empty (e.g. unknown extensions).
-        // Default to a generic binary type so the SAS contentType pin still works.
-        const mimeType = file.type || 'application/octet-stream';
+  setStatus('loading');
+  setErrorMsg(null);
+  setUpload({
+    fileName: files[0].name,
+    fileNumber: 1,
+    fileCount: files.length,
+    filePercent: 0,
+    overallPercent: 0,
+  });
 
-        // -- 1. Mint a write-only SAS URL via our Next.js route ---------------
-        const sasResponse = await fetch(`${API_BASE_URL}/upload/generate-sas`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            roomId,
-            fileName: file.name,
-            mimeType,
-          }),
-        });
+  try {
+    const uploadedMeta: FileMeta[] = [];
 
-        if (!sasResponse.ok) {
-          throw new Error(
-            await readApiError(sasResponse, 'Failed to generate secure upload token'),
-          );
-        }
-        const { sasUrl, blobUrl } = (await sasResponse.json()) as SasResponse;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const mimeType = file.type || 'application/octet-stream';
 
-        // -- 2. PUT the bytes directly to Azure Blob Storage ------------------
-        // Content-Type MUST match the value pinned in the SAS — Storage will
-        // reject the PUT with 403 otherwise.
-        const putResponse = await fetch(sasUrl, {
-          method: 'PUT',
-          body: file,
-          headers: {
-            'x-ms-blob-type': 'BlockBlob',
-            'Content-Type': mimeType,
-          },
-        });
+      const baseState = {
+        fileName: file.name,
+        fileNumber: i + 1,
+        fileCount: files.length,
+      };
 
-        if (!putResponse.ok) {
-          throw new Error(
-            `Azure Blob Storage rejected "${file.name}" (HTTP ${putResponse.status})`,
-          );
-        }
+      setUpload({
+        ...baseState,
+        filePercent: 0,
+        overallPercent: totalBytes > 0
+          ? Math.round((bytesCompleted / totalBytes) * 100)
+          : 0,
+      });
 
-        // -- 3. Register the upload in Cosmos DB ------------------------------
-        const finaliseResponse = await fetch(`${API_BASE_URL}/upload/finalise`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            roomId,
-            fileName: file.name,
-            blobUrl,           // clean URL, no SAS — server validates the prefix
-            sizeBytes: file.size,
-            mimeType,
-          }),
-        });
+      // -- 1. Mint a write-only SAS URL -----------------------------------
+      const sasResponse = await fetch(`${API_BASE_URL}/upload/generate-sas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomId, fileName: file.name, mimeType }),
+        signal: controller.signal,
+      });
 
-        if (!finaliseResponse.ok) {
-          throw new Error(
-            await readApiError(finaliseResponse, 'Failed to save file metadata'),
-          );
-        }
-        const finalised = (await finaliseResponse.json()) as FinaliseResponse;
-
-        uploadedMeta.push({
-          id: finalised.id,
-          name: file.name,
-          sizeBytes: file.size,
-          mimeType,
-          blobUrl: URL.createObjectURL(file), //blobUrl, 
-          uploadedAt: finalised.uploadedAt,
-        });
-
-        // Telemetry — fires once per successful file
-        appInsights.trackEvent('FileUploaded', {
-          roomId,
-          fileId: finalised.id,
-          sizeBytes: file.size,
-          mimeType,
-        });
-
-        setProgress(Math.round(((i + 1) / files.length) * 100));
+      if (!sasResponse.ok) {
+        throw new Error(
+          await readApiError(sasResponse, 'Could not get an upload token.'),
+        );
       }
+      const { sasUrl, blobUrl } = (await sasResponse.json()) as SasResponse;
 
-      setSentFiles((prev) => [...prev, ...uploadedMeta]);
-      setStatus('success');
-    } catch (err) {
-      console.error('[handleUploadToAzure]', err);
-      setStatus('error');
-      setErrorMsg(err instanceof Error ? err.message : 'Upload failed.');
-      appInsights.trackException(err as Error, { context: 'handleUploadToAzure', roomId });
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      // -- 2. PUT the bytes straight to Blob Storage, with progress -------
+      await uploadWithProgress({
+        url: sasUrl,
+        file,
+        mimeType,
+        signal: controller.signal,
+        onProgress: ({ loaded, percent }) => {
+          setUpload({
+            ...baseState,
+            filePercent: percent,
+            overallPercent: totalBytes > 0
+              ? Math.round(((bytesCompleted + loaded) / totalBytes) * 100)
+              : percent,
+          });
+        },
+      });
+
+      bytesCompleted += file.size;
+
+      // -- 3. Register the upload in Cosmos -------------------------------
+      const finaliseResponse = await fetch(`${API_BASE_URL}/upload/finalise`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId,
+          fileName: file.name,
+          blobUrl,
+          sizeBytes: file.size,
+          mimeType,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!finaliseResponse.ok) {
+        throw new Error(
+          await readApiError(finaliseResponse, 'Could not save file details.'),
+        );
+      }
+      const finalised = (await finaliseResponse.json()) as FinaliseResponse;
+
+      uploadedMeta.push({
+        id: finalised.id,
+        name: file.name,
+        sizeBytes: file.size,
+        mimeType,
+        blobUrl: URL.createObjectURL(file), // TODO Day 3 — never revoked
+        uploadedAt: finalised.uploadedAt,
+      });
+
+      appInsights.trackEvent('FileUploaded', {
+        roomId,
+        fileId: finalised.id,
+        sizeBytes: file.size,
+        mimeType,
+      });
     }
-  };
+
+    setSentFiles((prev) => [...prev, ...uploadedMeta]);
+    setStatus('success');
+    setUpload(null);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      // User cancelled — not an error state.
+      setStatus('idle');
+      setUpload(null);
+      return;
+    }
+    console.error('[handleUploadToAzure]', err);
+    setStatus('error');
+    setUpload(null);
+    setErrorMsg(err instanceof Error ? err.message : 'Upload failed.');
+    appInsights.trackException(err as Error, {
+      context: 'handleUploadToAzure',
+      roomId,
+    });
+  } finally {
+    uploadAbortRef.current = null;
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+};
   // ==========================================
   // AZURE INTEGRATION: SENDER LOGIC (Update)
   // ==========================================
@@ -452,6 +558,10 @@ export default function BridgeDrop() {
     setErrorMsg(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
+  const handleCancelUpload = () => {
+    uploadAbortRef.current?.abort();
+  };
+  useEffect(() => () => uploadAbortRef.current?.abort(), []);
 
   const blobStyle = "absolute rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob pointer-events-none";
 
@@ -576,6 +686,8 @@ export default function BridgeDrop() {
                       </div>
                       <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => e.target.files && handleUploadToAzure(e.target.files)} />
                     </label>
+                    {upload && (
+        <UploadProgressPanel upload={upload} onCancel={handleCancelUpload} />     )}
                   </div>
                 )}
               </div>
